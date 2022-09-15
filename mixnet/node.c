@@ -14,33 +14,46 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 
 void run_node(void *handle,
               volatile bool *keep_running,
               const struct mixnet_node_config config) {
 
-    // A dumb dataplane. Forwards DATA packets if they're destined
-    // for an immediate neighbor, otherwise drops them. Also drops
-    // all other kinds of packets (STP, FLOOD, LSA, PING).
-    const uint16_t num_neighbors = config.num_neighbors;
+    int err = 0;
+
     while (*keep_running) {
+        mixnet_packet *stp_packet = malloc(sizeof(mixnet_packet) + sizeof(mixnet_packet_stp));
+        mixnet_packet_stp *stp_payload = malloc(sizeof(mixnet_packet_stp));
+        
         uint8_t port = 0;
-        bool success = false;
         mixnet_packet* packet = NULL;
+
+        // Broadcast (Me, 0, Me) to all neighbors
+        for (size_t nid = 0; nid < config.num_neighbors; nid++) {
+            stp_packet->src_address = config.node_addr;
+            stp_packet->dst_address = config.neighbor_addrs[nid];
+            stp_packet->type = PACKET_TYPE_STP;
+            stp_packet->payload_size = sizeof(mixnet_packet_stp);
+
+            stp_payload->root_address = config.node_addr;
+            stp_payload->path_length = 0;
+            stp_payload->node_address = config.node_addr;
+
+            // fill payload of packet
+            memcpy(stp_packet->payload, stp_payload, sizeof(mixnet_packet_stp));
+
+            if( (err = mixnet_send(handle, nid, stp_packet)) < 0){
+                printf("Error sending STP pkt\n");
+            }
+            //printf("[%u] sent STP to Node %d\n", config.node_addr, config.neighbor_addrs[nid] );
+        }
 
         int value = mixnet_recv(handle, &port, &packet);
         if (value != 0) {
-            // Data packet, check if it's for a neighbor
-            if (packet->type == PACKET_TYPE_DATA) {
-                for (size_t nid = 0; nid < num_neighbors && !success; nid++) {
-                    if (config.neighbor_addrs[nid] == packet->dst_address) {
-                        mixnet_send(handle, nid, packet);
-                        // Ought to check if send() returns -1!
-                        success = true;
-                    }
-                }
+            if (packet->type == PACKET_TYPE_STP) {
+                printf("[%u] Received STP packet from: %u\n", config.node_addr, packet->src_address);
             }
-            if (!success) { free(packet); }
         }
     }
-}
+} 
