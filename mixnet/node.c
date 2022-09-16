@@ -16,43 +16,58 @@
 #include <stdio.h>
 #include <string.h>
 
+typedef struct{
+    mixnet_address root_address;
+    uint16_t path_length;      
+    mixnet_address next_hop_address;    
+} stp_route_t;
+
 void run_node(void *handle,
               volatile bool *keep_running,
               const struct mixnet_node_config config) {
 
     int err = 0;
+    // (My Root, Path Length, Next Hop)
+    stp_route_t *stp_route = malloc(sizeof(stp_route_t));
+    stp_route->root_address = config.node_addr;
+    stp_route->path_length = 0;
+    stp_route->next_hop_address = config.node_addr;
 
     while (*keep_running) {
-        mixnet_packet *stp_packet = malloc(sizeof(mixnet_packet) + sizeof(mixnet_packet_stp));
-        mixnet_packet_stp *stp_payload = malloc(sizeof(mixnet_packet_stp));
+        mixnet_packet *broadcast_packet = malloc(sizeof(mixnet_packet) + sizeof(mixnet_packet_stp));
+        mixnet_packet_stp *stp_broadcast = malloc(sizeof(mixnet_packet_stp));
         
         uint8_t port = 0;
-        mixnet_packet* packet = NULL;
+        mixnet_packet* recvd_packet = NULL;
+        mixnet_packet_stp* recvd_stp = NULL;
 
-        // Broadcast (Me, 0, Me) to all neighbors
+        /*** SEND ***/
+        // Broadcast (My Root, Path Length, My ID)
         for (size_t nid = 0; nid < config.num_neighbors; nid++) {
-            stp_packet->src_address = config.node_addr;
-            stp_packet->dst_address = config.neighbor_addrs[nid];
-            stp_packet->type = PACKET_TYPE_STP;
-            stp_packet->payload_size = sizeof(mixnet_packet_stp);
+            broadcast_packet->src_address = config.node_addr;
+            broadcast_packet->dst_address = config.neighbor_addrs[nid];
+            broadcast_packet->type = PACKET_TYPE_STP;
+            broadcast_packet->payload_size = sizeof(mixnet_packet_stp);
 
-            stp_payload->root_address = config.node_addr;
-            stp_payload->path_length = 0;
-            stp_payload->node_address = config.node_addr;
+            stp_broadcast->root_address = stp_route->root_address;
+            stp_broadcast->path_length = stp_route->path_length;
+            stp_broadcast->node_address = config.node_addr;
 
-            // fill payload of packet
-            memcpy(stp_packet->payload, stp_payload, sizeof(mixnet_packet_stp));
+            memcpy(broadcast_packet->payload, stp_broadcast, sizeof(mixnet_packet_stp));
 
-            if( (err = mixnet_send(handle, nid, stp_packet)) < 0){
+            if( (err = mixnet_send(handle, nid, broadcast_packet)) < 0){
                 printf("Error sending STP pkt\n");
             }
-            //printf("[%u] sent STP to Node %d\n", config.node_addr, config.neighbor_addrs[nid] );
+
+            //printf("Sent (%u, %u, %u)\n", stp_broadcast->root_address, stp_broadcast->path_length, stp_broadcast->node_address);
         }
 
-        int value = mixnet_recv(handle, &port, &packet);
+        /*** RECEIVE ***/
+        int value = mixnet_recv(handle, &port, &recvd_packet);
         if (value != 0) {
-            if (packet->type == PACKET_TYPE_STP) {
-                printf("[%u] Received STP packet from: %u\n", config.node_addr, packet->src_address);
+            if (recvd_packet->type == PACKET_TYPE_STP) {
+                recvd_stp = (mixnet_packet_stp*) recvd_packet->payload;
+                printf("Received (%u, %u, %u)\n", recvd_stp->root_address, recvd_stp->path_length, recvd_stp->node_address);
             }
         }
     }
