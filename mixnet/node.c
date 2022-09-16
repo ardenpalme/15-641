@@ -22,16 +22,18 @@ typedef struct{
     mixnet_address next_hop_address;    
 } stp_route_t;
 
+// authoritative STP path for this node
+static stp_route_t stp_route;
+
 void run_node(void *handle,
               volatile bool *keep_running,
               const struct mixnet_node_config config) {
 
     int err = 0;
     // (My Root, Path Length, Next Hop)
-    stp_route_t *stp_route = malloc(sizeof(stp_route_t));
-    stp_route->root_address = config.node_addr;
-    stp_route->path_length = 0;
-    stp_route->next_hop_address = config.node_addr;
+    stp_route.root_address = config.node_addr;
+    stp_route.path_length = 0;
+    stp_route.next_hop_address = config.node_addr;
 
     while (*keep_running) {
         mixnet_packet *broadcast_packet = malloc(sizeof(mixnet_packet) + sizeof(mixnet_packet_stp));
@@ -49,8 +51,8 @@ void run_node(void *handle,
             broadcast_packet->type = PACKET_TYPE_STP;
             broadcast_packet->payload_size = sizeof(mixnet_packet_stp);
 
-            stp_broadcast->root_address = stp_route->root_address;
-            stp_broadcast->path_length = stp_route->path_length;
+            stp_broadcast->root_address = stp_route.root_address;
+            stp_broadcast->path_length = stp_route.path_length;
             stp_broadcast->node_address = config.node_addr;
 
             memcpy(broadcast_packet->payload, stp_broadcast, sizeof(mixnet_packet_stp));
@@ -59,7 +61,7 @@ void run_node(void *handle,
                 printf("Error sending STP pkt\n");
             }
 
-            //printf("Sent (%u, %u, %u)\n", stp_broadcast->root_address, stp_broadcast->path_length, stp_broadcast->node_address);
+            printf("Sent (%u, %u, %u)\n", stp_broadcast->root_address, stp_broadcast->path_length, stp_broadcast->node_address);
         }
 
         /*** RECEIVE ***/
@@ -68,6 +70,27 @@ void run_node(void *handle,
             if (recvd_packet->type == PACKET_TYPE_STP) {
                 recvd_stp = (mixnet_packet_stp*) recvd_packet->payload;
                 printf("Received (%u, %u, %u)\n", recvd_stp->root_address, recvd_stp->path_length, recvd_stp->node_address);
+
+                if(recvd_stp->root_address < stp_route.root_address) {
+                        stp_route.root_address = recvd_stp->root_address;
+
+                }else if(recvd_stp->root_address == stp_route.root_address) {
+                    if(recvd_stp->path_length < stp_route.path_length){
+                        stp_route.next_hop_address = recvd_stp->node_address;    
+
+                    }else if(recvd_stp->path_length == stp_route.path_length){
+                        // route through that node if its ID is less than our ID
+                        if(recvd_stp->node_address < config.node_addr){
+                            stp_route.next_hop_address = recvd_stp->node_address;    
+                        }
+                    }else{
+                        // you know that that node is a child of ours
+
+                    }
+
+                }else{
+                        // ignore its root is wrong       
+                }
             }
         }
     }
