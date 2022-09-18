@@ -17,6 +17,8 @@
 #include <string.h>
 #include <sys/time.h>
 
+#define DEBUG_FLOOD 0
+
 typedef struct{
     mixnet_address root_address;
     uint16_t path_length;      
@@ -26,36 +28,35 @@ typedef struct{
 // the node's database for current STP path to root node
 static stp_route_t stp_route_db;
 
+// STP functions
 void broadcast_stp(void *handle, 
                    const struct mixnet_node_config config, 
                    mixnet_packet *broadcast_packet, 
-                   stp_route_t *stp_route_db,
-                   uint8_t *active_ports,
-                   bool print_en);
+                   stp_route_t *stp_route_db);
+void print_stp(const struct mixnet_node_config config, const char *prefix_str, mixnet_packet *packet);
 
+// FLOOD functions
 void broadcast_flood(void *handle, 
                      const struct mixnet_node_config config, 
-                     mixnet_packet *flood_packet, 
-                     uint8_t *active_ports,
-                     bool print_en);
+                     uint8_t *active_ports);
 
-void print_stp(const char *prefix_str, mixnet_packet *packet);
+// Generic functions 
+void print_packet_header(mixnet_packet *pkt);
+int get_port_from_addr(const struct mixnet_node_config config, mixnet_address next_hop_address, uint8_t *stp_ports);
 
+// Port-handling functions
 enum portvec_decision {RESTORE_PORTS, SAVE_PORTS, NO_SAVE_PORTS};
 enum port_decision {BLOCK_PORT, OPEN_PORT};
 void activate_all_ports(const struct mixnet_node_config config, uint8_t *ports);
+void deactivate_all_ports(const struct mixnet_node_config config, uint8_t *ports);
 void port_to_neighbor(const struct mixnet_node_config config, 
                             mixnet_address niegbhor_addr, 
                             uint8_t *ports, 
                             uint8_t*prev_ports, 
                             enum port_decision decision,
                             enum portvec_decision portvec_decision);
-
 void print_ports(const struct mixnet_node_config config, uint8_t *ports);
 
-void print_packet_header(mixnet_packet *pkt);
-
-int get_port_from_addr(const struct mixnet_node_config config, mixnet_address next_hop_address, uint8_t *stp_ports);
 
 void run_node(void *handle,
               volatile bool *keep_running,
@@ -67,7 +68,9 @@ void run_node(void *handle,
     stp_route_db.next_hop_address = config.node_addr;
 
     uint8_t *stp_ports = malloc(sizeof(uint8_t) * config.num_neighbors);  // ports to send STP route advertisements on during convergence period
-    activate_all_ports(config, stp_ports);
+    uint8_t *flood_ports = malloc(sizeof(uint8_t) * config.num_neighbors);  // ports to disable to send FLOOD packets to only neighbors which haven't recv'd them
+    deactivate_all_ports(config, stp_ports);
+    activate_all_ports(config, flood_ports);
 
     bool advertise_stp = true;
     bool is_root = true;
@@ -75,6 +78,7 @@ void run_node(void *handle,
     struct timeval root_hello_timer, root_hello_timer_start;
     gettimeofday(&root_hello_timer_start, NULL);
 
+    mixnet_packet *stp_packet = NULL;
     mixnet_packet *recvd_packet = NULL;
     mixnet_packet_stp *recvd_stp_packet = NULL;
     mixnet_address stp_parent_addr = -1;
@@ -85,14 +89,11 @@ void run_node(void *handle,
     const int user_port = config.num_neighbors;
 
     while (*keep_running) {
-        mixnet_packet *stp_packet = malloc(sizeof(mixnet_packet) + sizeof(mixnet_packet_stp));
-        mixnet_packet *user_flood_packet = malloc(sizeof(mixnet_packet)); // flood packet received to be sent to user
-        mixnet_packet *broadcast_flood_packet = malloc(sizeof(mixnet_packet)); // flood packet received to be broadcast across STP tree
 
         /*** SEND ***/
         // Broadcast (My Root, Path Length, My ID) once 
         if(advertise_stp){
-            broadcast_stp(handle, config, stp_packet, &stp_route_db, stp_ports, true);
+            broadcast_stp(handle, config, stp_packet, &stp_route_db);
             advertise_stp=false;
         }
         
@@ -100,19 +101,19 @@ void run_node(void *handle,
         gettimeofday(&root_hello_timer, NULL);
         if(is_root && 
             (((root_hello_timer.tv_usec - root_hello_timer_start.tv_usec)*1000) < config.root_hello_interval_ms)) {
-            broadcast_stp(handle, config, stp_packet, &stp_route_db, stp_ports, false);
+            broadcast_stp(handle, config, stp_packet, &stp_route_db);
             gettimeofday(&root_hello_timer_start, NULL);
         }
 
         /*** RECEIVE ***/
         int value = mixnet_recv(handle, &recv_port, &recvd_packet);
         if (value != 0) {
-            print_packet_header(recvd_packet);
-            if(recvd_packet->type == PACKET_TYPE_STP && stp_ports[recv_port]) {
+            //print_packet_header(recvd_packet);
+            if(recvd_packet->type == PACKET_TYPE_STP) {
                 recvd_stp_packet = (mixnet_packet_stp*) recvd_packet->payload;
 
                 if(is_root || recvd_stp_packet->root_address != recvd_stp_packet->node_address){
-                    print_stp("Received ", recvd_packet);
+                    print_stp(config, "Received ", recvd_packet);
                     printf("[%u] STP DB: (my_root: %u, path_len: %u, next_hop: %u)\n", 
                         config.node_addr, 
                         stp_route_db.root_address,
@@ -123,12 +124,12 @@ void run_node(void *handle,
                 if(recvd_stp_packet->root_address < stp_route_db.root_address) {
                     is_root= false;
                     stp_route_db.root_address = recvd_stp_packet->root_address;
-                    stp_route_db.path_length += 1;
+                    stp_route_db.path_length = recvd_stp_packet->path_length + 1;
                     stp_route_db.next_hop_address = recvd_stp_packet->node_address; 
                     port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, NULL, OPEN_PORT, NO_SAVE_PORTS);
 
                     // tell everyone about this
-                    broadcast_stp(handle, config, stp_packet, &stp_route_db, stp_ports, false);
+                    broadcast_stp(handle, config, stp_packet, &stp_route_db);
 
                 }else if(recvd_stp_packet->root_address == stp_route_db.root_address) {
                     if(recvd_stp_packet->path_length < stp_route_db.path_length) {
@@ -137,9 +138,17 @@ void run_node(void *handle,
                         stp_parent_addr = recvd_stp_packet->node_address;
                         stp_parent_path_length = recvd_stp_packet->path_length;
                         // no change in path length b/c we're just routing through a different neighbor
+                    
+                    }else if((stp_parent_addr > 0) && (recvd_stp_packet->path_length == stp_parent_path_length)) {
+                        // same received advertisement has the path length to the stable root as the path that my parent advertises
+                        port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, NULL, BLOCK_PORT, NO_SAVE_PORTS);
 
                     }else if(recvd_stp_packet->path_length == stp_route_db.path_length) {
-                        if(recvd_stp_packet->node_address < config.node_addr) {
+                        if((stp_parent_addr > 0) && (recvd_stp_packet->node_address != stp_parent_addr)){
+                            // same path length to stable root, but the node is not my parent
+                            port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, NULL, BLOCK_PORT, NO_SAVE_PORTS);
+
+                        }else if(recvd_stp_packet->node_address < stp_route_db.next_hop_address) {
                             stp_route_db.next_hop_address = recvd_stp_packet->node_address;
                             port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, NULL, OPEN_PORT, NO_SAVE_PORTS);
                             stp_parent_addr = recvd_stp_packet->node_address;
@@ -152,39 +161,41 @@ void run_node(void *handle,
                     }
                 }
 
-                if(is_root || recvd_stp_packet->root_address != recvd_stp_packet->node_address) {
-                    printf("[%u] STP DB: (my_root: %u, path_len: %u, next_hop: %u)\n", 
-                        config.node_addr, 
-                        stp_route_db.root_address,
-                        stp_route_db.path_length,
-                        stp_route_db.next_hop_address);
-                    print_ports(config, stp_ports);
-                }
+                printf("[%u] STP DB: (my_root: %u, path_len: %u, next_hop: %u)\n", 
+                    config.node_addr, 
+                    stp_route_db.root_address,
+                    stp_route_db.path_length,
+                    stp_route_db.next_hop_address);
+                print_ports(config, stp_ports);
             }
             
             if(recvd_packet->type == PACKET_TYPE_FLOOD) {
-                
                 if(recv_port == user_port) {
+                    #if DEBUG_FLOOD
                     printf("[%u] Received FLOOD packet from user\n", config.node_addr);
+                    #endif
+                    memcpy(flood_ports, stp_ports, (config.num_neighbors * sizeof(uint8_t)));
+
                 } else if(stp_ports[recv_port]) {
-                    stp_ports[recv_port] = 0; // don't broadcast back to the port that you recv'd the packet on
-                    printf("[%u] Received FLOOD packet on port %u\n", config.node_addr, recv_port);
+                    #if DEBUG_FLOOD
+                    printf("[%u] Received FLOOD packet from Node %u\n", config.node_addr, config.neighbor_addrs[recv_port]);
+                    #endif
 
+                    if( (err = mixnet_send(handle, user_port, recvd_packet)) < 0){
+                        printf("Error sending FLOOD pkt to user\n");
+                    }
+                    #if DEBUG_FLOOD
+                    printf("[%u] Delivered FLOOD pkt to user\n", config.node_addr);
+                    #endif
+                    
+                    // don't send the packet back to the node from which you received it, it surely already has the packet since it sent it to you
+                    port_to_neighbor(config, config.neighbor_addrs[recv_port], flood_ports, NULL, BLOCK_PORT, NO_SAVE_PORTS);
                 }
-
-                memcpy(user_flood_packet, recvd_packet, sizeof(mixnet_packet));
-                memcpy(broadcast_flood_packet, recvd_packet, sizeof(mixnet_packet));
-                // deliver the packet to the user
-                if( (err = mixnet_send(handle, user_port, user_flood_packet)) < 0){
-                    printf("Error sending FLOOD pkt to user\n");
-                }
-                printf("[%u] Delivered FLOOD pkt to user\n", config.node_addr);
-
-                // send FLOOD packet along the spanning tree
-                broadcast_flood(handle, config, broadcast_flood_packet, stp_ports, true);
-
-                stp_ports[recv_port] = 1; // re-enable the port you received the FLOOD packet on
+                stp_ports[recv_port] = 0;
+                broadcast_flood(handle, config, stp_ports);
+                stp_ports[recv_port] = 1;
             }
+
         }
     }
 } 
@@ -192,70 +203,65 @@ void run_node(void *handle,
 void broadcast_stp(void *handle, 
                    const struct mixnet_node_config config, 
                    mixnet_packet *broadcast_packet, 
-                   stp_route_t *stp_route_db,
-                   uint8_t *active_ports,
-                   bool print_en) 
+                   stp_route_t *stp_route_db)
 {
     mixnet_packet_stp stp_payload;
     int err=0;
     for (size_t nid = 0; nid < config.num_neighbors; nid++) {
-        if(active_ports[nid]) {
-            broadcast_packet->src_address = config.node_addr;
-            broadcast_packet->dst_address = config.neighbor_addrs[nid];
-            broadcast_packet->type = PACKET_TYPE_STP;
-            broadcast_packet->payload_size = sizeof(mixnet_packet_stp);
+        broadcast_packet = malloc(sizeof(mixnet_packet) + sizeof(mixnet_packet_stp));
+        broadcast_packet->src_address = config.node_addr;
+        broadcast_packet->dst_address = config.neighbor_addrs[nid];
+        broadcast_packet->type = PACKET_TYPE_STP;
+        broadcast_packet->payload_size = sizeof(mixnet_packet_stp);
 
-            stp_payload.root_address = stp_route_db->root_address;
-            stp_payload.path_length = stp_route_db->path_length;
-            stp_payload.node_address = config.node_addr;
+        stp_payload.root_address = stp_route_db->root_address;
+        stp_payload.path_length = stp_route_db->path_length;
+        stp_payload.node_address = config.node_addr;
 
-            memcpy(broadcast_packet->payload, &stp_payload, sizeof(mixnet_packet_stp));
+        memcpy(broadcast_packet->payload, &stp_payload, sizeof(mixnet_packet_stp));
 
-            //if(print_en){
-                printf("[%u] Broadcast (%u, %u, %u)\n", 
-                    config.node_addr,
-                    stp_payload.root_address, stp_payload.path_length, stp_payload.node_address);
-            //}
+        printf("[%u] Broadcast (%u, %u, %u)\n", 
+            config.node_addr,
+            stp_payload.root_address, stp_payload.path_length, stp_payload.node_address);
 
-            if( (err = mixnet_send(handle, nid, broadcast_packet)) < 0){
-                printf("Error sending STP pkt\n");
-            }
+        if( (err = mixnet_send(handle, nid, broadcast_packet)) < 0) {
+            printf("Error sending STP pkt\n");
         }
     }
 }
 
 void broadcast_flood(void *handle, 
                      const struct mixnet_node_config config, 
-                     mixnet_packet *flood_packet, 
-                     uint8_t *active_ports,
-                     bool print_en) 
+                     uint8_t *active_ports) 
 {
     int err=0;
+    mixnet_packet *flood_pkt;
+
     for (size_t nid = 0; nid < config.num_neighbors; nid++) {
         if(active_ports[nid]) {
-            flood_packet->src_address = 0;
-            flood_packet->dst_address = 0;
-            flood_packet->type = PACKET_TYPE_FLOOD;
-            flood_packet->payload_size = 0;
+            flood_pkt = malloc(sizeof(mixnet_packet)); // flood packet received to be broadcast across STP tree
+            flood_pkt->src_address = 0;
+            flood_pkt->dst_address = 0;
+            flood_pkt->type = PACKET_TYPE_FLOOD;
+            flood_pkt->payload_size = 0;
 
-            if(print_en){
-                printf("[%u] Broadcast FLOOD to %lu\n", 
-                    config.node_addr,
-                    nid);
-            }
-
-            if( (err = mixnet_send(handle, nid, flood_packet)) < 0){
+            if( (err = mixnet_send(handle, nid, flood_pkt)) < 0){
                 printf("Error sending FLOOD pkt\n");
             }
+
+            #if DEBUG_FLOOD
+            printf("[%u] Broadcast FLOOD to Node %u\n", 
+                config.node_addr,
+                config.neighbor_addrs[nid]);
+            #endif 
         }
     }
 }
 
-void print_stp(const char *prefix_str, mixnet_packet *packet){
+void print_stp(const struct mixnet_node_config config, const char *prefix_str, mixnet_packet *packet){
     mixnet_packet_stp *stp_payload = (mixnet_packet_stp*) packet->payload;
-    printf("%s (%u, %u, %u)\n", prefix_str, stp_payload->root_address, stp_payload->path_length, stp_payload->node_address);
+    printf("[%u] %s (%u, %u, %u)\n", config.node_addr, prefix_str, stp_payload->root_address, stp_payload->path_length, stp_payload->node_address);
 }
-
 
 
 void activate_all_ports(const struct mixnet_node_config config, uint8_t *ports){
@@ -264,12 +270,18 @@ void activate_all_ports(const struct mixnet_node_config config, uint8_t *ports){
     }
 }
 
+void deactivate_all_ports(const struct mixnet_node_config config, uint8_t *ports){
+    for(int nid=0; nid<config.num_neighbors; nid++){
+        ports[nid] = 0;
+    }
+}
+
 void port_to_neighbor(const struct mixnet_node_config config, 
-                            mixnet_address niegbhor_addr, 
-                            uint8_t *ports, 
-                            uint8_t*prev_ports, 
-                            enum port_decision decision,
-                            enum portvec_decision portvec_decision) 
+                        mixnet_address niegbhor_addr, 
+                        uint8_t *ports, 
+                        uint8_t*prev_ports, 
+                        enum port_decision decision,
+                        enum portvec_decision portvec_decision) 
 {
     size_t len_port_vec = config.num_neighbors * sizeof(uint8_t); // bytes
     
