@@ -41,10 +41,18 @@ void broadcast_flood(void *handle,
 
 void print_stp(const char *prefix_str, mixnet_packet *packet);
 
+enum portvec_decision {RESTORE_PORTS, SAVE_PORTS, NO_SAVE_PORTS};
+enum port_decision {BLOCK_PORT, OPEN_PORT};
 void activate_all_ports(const struct mixnet_node_config config, uint8_t *ports);
-void block_port_to_neighbor(const struct mixnet_node_config config, uint8_t *ports, mixnet_address niegbhor_addr);
-void open_port_to_neighbor(const struct mixnet_node_config config, uint8_t *ports, mixnet_address niegbhor_addr);
+void port_to_neighbor(const struct mixnet_node_config config, 
+                            mixnet_address niegbhor_addr, 
+                            uint8_t *ports, 
+                            uint8_t*prev_ports, 
+                            enum port_decision decision,
+                            enum portvec_decision portvec_decision);
+
 void print_ports(const struct mixnet_node_config config, uint8_t *ports);
+
 void print_packet_header(mixnet_packet *pkt);
 
 int get_port_from_addr(const struct mixnet_node_config config, mixnet_address next_hop_address, uint8_t *stp_ports);
@@ -117,7 +125,7 @@ void run_node(void *handle,
                     stp_route_db.root_address = recvd_stp_packet->root_address;
                     stp_route_db.path_length += 1;
                     stp_route_db.next_hop_address = recvd_stp_packet->node_address; 
-                    open_port_to_neighbor(config, stp_ports, recvd_stp_packet->node_address);
+                    port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, NULL, OPEN_PORT, NO_SAVE_PORTS);
 
                     // tell everyone about this
                     broadcast_stp(handle, config, stp_packet, &stp_route_db, stp_ports, false);
@@ -125,7 +133,7 @@ void run_node(void *handle,
                 }else if(recvd_stp_packet->root_address == stp_route_db.root_address) {
                     if(recvd_stp_packet->path_length < stp_route_db.path_length) {
                         stp_route_db.next_hop_address = recvd_stp_packet->node_address;
-                        open_port_to_neighbor(config, stp_ports, recvd_stp_packet->node_address); // that node is my parent
+                        port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, NULL, OPEN_PORT, NO_SAVE_PORTS);
                         stp_parent_addr = recvd_stp_packet->node_address;
                         stp_parent_path_length = recvd_stp_packet->path_length;
                         // no change in path length b/c we're just routing through a different neighbor
@@ -133,14 +141,14 @@ void run_node(void *handle,
                     }else if(recvd_stp_packet->path_length == stp_route_db.path_length) {
                         if(recvd_stp_packet->node_address < config.node_addr) {
                             stp_route_db.next_hop_address = recvd_stp_packet->node_address;
-                            open_port_to_neighbor(config, stp_ports, recvd_stp_packet->node_address); // that node is my parent
+                            port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, NULL, OPEN_PORT, NO_SAVE_PORTS);
                             stp_parent_addr = recvd_stp_packet->node_address;
                             stp_parent_path_length = recvd_stp_packet->path_length;
                         }
 
                     }else{
                         // open the port to this neighboring node because it must be your child
-                        open_port_to_neighbor(config, stp_ports, recvd_stp_packet->node_address);
+                        port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, NULL, OPEN_PORT, NO_SAVE_PORTS);
                     }
                 }
 
@@ -154,24 +162,28 @@ void run_node(void *handle,
                 }
             }
             
-            if(recvd_packet->type == PACKET_TYPE_FLOOD && (stp_ports[recv_port] || recv_port == user_port)) {
-                printf("Received FLOOD packet\n");
+            if(recvd_packet->type == PACKET_TYPE_FLOOD) {
+                
+                if(recv_port == user_port) {
+                    printf("[%u] Received FLOOD packet from user\n", config.node_addr);
+                } else if(stp_ports[recv_port]) {
+                    stp_ports[recv_port] = 0; // don't broadcast back to the port that you recv'd the packet on
+                    printf("[%u] Received FLOOD packet on port %u\n", config.node_addr, recv_port);
+
+                }
+
                 memcpy(user_flood_packet, recvd_packet, sizeof(mixnet_packet));
                 memcpy(broadcast_flood_packet, recvd_packet, sizeof(mixnet_packet));
                 // deliver the packet to the user
                 if( (err = mixnet_send(handle, user_port, user_flood_packet)) < 0){
                     printf("Error sending FLOOD pkt to user\n");
                 }
+                printf("[%u] Delivered FLOOD pkt to user\n", config.node_addr);
 
                 // send FLOOD packet along the spanning tree
-                int next_hop_port;
-                if ((next_hop_port=get_port_from_addr(config, stp_route_db.next_hop_address, stp_ports)) < 0){
-                    printf("Next hop port blocked\n");
-                }
-                if( (err = mixnet_send(handle, next_hop_port, broadcast_flood_packet)) < 0){
-                    printf("Error sending FLOOD pkt\n");
-                }
+                broadcast_flood(handle, config, broadcast_flood_packet, stp_ports, true);
 
+                stp_ports[recv_port] = 1; // re-enable the port you received the FLOOD packet on
             }
         }
     }
@@ -252,24 +264,45 @@ void activate_all_ports(const struct mixnet_node_config config, uint8_t *ports){
     }
 }
 
-void block_port_to_neighbor(const struct mixnet_node_config config, uint8_t *ports, mixnet_address niegbhor_addr) {
-    for(int nid=0; nid<config.num_neighbors; nid++){
-        if(config.neighbor_addrs[nid] == niegbhor_addr){
-            ports[nid] = 0;
-        }
+void port_to_neighbor(const struct mixnet_node_config config, 
+                            mixnet_address niegbhor_addr, 
+                            uint8_t *ports, 
+                            uint8_t*prev_ports, 
+                            enum port_decision decision,
+                            enum portvec_decision portvec_decision) 
+{
+    size_t len_port_vec = config.num_neighbors * sizeof(uint8_t); // bytes
+    
+    if(portvec_decision == RESTORE_PORTS){
+        memcpy(ports, prev_ports, len_port_vec);
+        
+    }else if(portvec_decision == SAVE_PORTS){
+        memcpy(prev_ports, ports, len_port_vec);
     }
-}
 
-void open_port_to_neighbor(const struct mixnet_node_config config, uint8_t *ports, mixnet_address niegbhor_addr) {
     for(int nid=0; nid<config.num_neighbors; nid++){
         if(config.neighbor_addrs[nid] == niegbhor_addr){
-            ports[nid] = 1;
+
+            if(decision == BLOCK_PORT)
+                ports[nid] = 0;
+
+            else if(decision == OPEN_PORT)
+                ports[nid] = 1;
         }
     }
+    
 }
 
 void print_ports(const struct mixnet_node_config config, uint8_t *ports){
     printf("[%u] Ports [", config.node_addr);
+    for(int nid=0; nid<config.num_neighbors; nid++){
+        printf("%u", config.neighbor_addrs[nid]);
+        if(nid != config.num_neighbors-1)
+            printf(", ");
+    }
+    printf("]\n");
+
+    printf("[%u]       [", config.node_addr);
     for(int nid=0; nid<config.num_neighbors; nid++){
         printf("%u", ports[nid]);
         if(nid != config.num_neighbors-1)
