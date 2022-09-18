@@ -18,6 +18,7 @@
 #include <sys/time.h>
 
 #define DEBUG_FLOOD 0
+#define DEBUG_STP 0
 
 typedef struct{
     mixnet_address root_address;
@@ -113,12 +114,14 @@ void run_node(void *handle,
                 recvd_stp_packet = (mixnet_packet_stp*) recvd_packet->payload;
 
                 if(is_root || recvd_stp_packet->root_address != recvd_stp_packet->node_address){
+                    #if DEBUG_STP
                     print_stp(config, "Received ", recvd_packet);
                     printf("[%u] STP DB: (my_root: %u, path_len: %u, next_hop: %u)\n", 
                         config.node_addr, 
                         stp_route_db.root_address,
                         stp_route_db.path_length,
                         stp_route_db.next_hop_address);
+                    #endif
                 }
 
                 if(recvd_stp_packet->root_address < stp_route_db.root_address) {
@@ -161,12 +164,14 @@ void run_node(void *handle,
                     }
                 }
 
+                #if DEBUG_STP
                 printf("[%u] STP DB: (my_root: %u, path_len: %u, next_hop: %u)\n", 
                     config.node_addr, 
                     stp_route_db.root_address,
                     stp_route_db.path_length,
                     stp_route_db.next_hop_address);
                 print_ports(config, stp_ports);
+                #endif
             }
             
             if(recvd_packet->type == PACKET_TYPE_FLOOD) {
@@ -220,9 +225,11 @@ void broadcast_stp(void *handle,
 
         memcpy(broadcast_packet->payload, &stp_payload, sizeof(mixnet_packet_stp));
 
+        #if DEBUG_STP
         printf("[%u] Broadcast (%u, %u, %u)\n", 
             config.node_addr,
             stp_payload.root_address, stp_payload.path_length, stp_payload.node_address);
+        #endif
 
         if( (err = mixnet_send(handle, nid, broadcast_packet)) < 0) {
             printf("Error sending STP pkt\n");
