@@ -26,6 +26,7 @@ typedef struct{
     mixnet_address next_hop_address;    
 } stp_route_t;
 
+
 // the node's database for current STP path to root node
 //TODO: why create this here. Should be 1 per node right?
 static stp_route_t stp_route_db;
@@ -36,6 +37,11 @@ void broadcast_stp(void *handle,
                    mixnet_packet *broadcast_packet, 
                    stp_route_t *stp_route_db);
 void print_stp(const struct mixnet_node_config config, const char *prefix_str, mixnet_packet *packet);
+void fwd_root_hello(void *handle, 
+                    const struct mixnet_node_config config, 
+                    mixnet_packet *recvd_hello_pkt, 
+                    uint8_t *active_ports,
+                    stp_route_t *stp_route_db);
 
 // FLOOD functions
 void broadcast_flood(void *handle, 
@@ -94,7 +100,7 @@ void run_node(void *handle,
     const int user_port = config.num_neighbors;
 
     // Broadcast (My Root, Path Length, My ID) initially 
-    if (is_root(config, &stp_route_db)){
+    if (is_root(config, &stp_route_db)) {
         broadcast_stp(handle, config, stp_packet, &stp_route_db);
         gettimeofday(&root_hello_timer_start, NULL); //Reset root hello timer start
 
@@ -120,17 +126,17 @@ void run_node(void *handle,
                 case PACKET_TYPE_STP: {
                     
                     recvd_stp_packet = (mixnet_packet_stp*) recvd_packet->payload;
-                    is_hello_root = true;
+
+                    #if DEBUG_STP
                     if(is_root(config, &stp_route_db) || recvd_stp_packet->root_address != recvd_stp_packet->node_address){
-                        #if DEBUG_STP
                         print_stp(config, "Received ", recvd_packet);
                         printf("[%u] STP DB: (my_root: %u, path_len: %u, next_hop: %u)\n", 
                             config.node_addr, 
                             stp_route_db.root_address,
                             stp_route_db.path_length,
                             stp_route_db.next_hop_address);
-                        #endif
                     }
+                    #endif
 
                     // Receive STP message from smaller ID root node
                     // Make him root and increment path length
@@ -221,16 +227,21 @@ void run_node(void *handle,
                     //     }
                     // }
 
-                    if (!is_root(config, &stp_route_db) && is_hello_root){
-                        // printf("Received hello root from node %d \n", recvd_stp_packet->node_address);
-                        // printf("Port Neighbour status: ");
-                        // for (int i=0; i < config.num_neighbors; i++){
-                        //     printf("%d ", stp_ports);
-                        // }
-                        // printf("\n");
-                        // print_ports(config, stp_ports);
-
+                    //if (!is_root(config, &stp_route_db) && !is_hello_root){
+                    if((recvd_stp_packet->node_address == recvd_stp_packet->root_address) &&
+                       (recvd_stp_packet->root_address == stp_route_db.root_address)) {
+                    #if DEBUG_STP
+                        printf("[%u] Received hello from node %d \n", config.node_addr, recvd_stp_packet->node_address);
+                        print_ports(config, stp_ports);
+                    #endif
+                        
                         gettimeofday(&election_timer_start, NULL); // On receiving hello root, reset election timer
+
+                        /*
+                            stp_ports[recv_port] = 0;
+                            fwd_root_hello(handle, config, recvd_packet, stp_ports, &stp_route_db);
+                            stp_ports[recv_port] = 1;
+                        */
                     }
 
                     #if DEBUG_STP
@@ -276,10 +287,13 @@ void run_node(void *handle,
                 
                 default: break;
             }
-        } else {
+
+            // check if it's time to start re-election
             gettimeofday(&election_timer, NULL);
             if ((diff_in_microseconds(election_timer_start, election_timer) >= config.reelection_interval_ms * 1000)){
-                // printf("election interval elapsed. Node %d thinks it's root \n", config.node_addr);
+                gettimeofday(&election_timer_start, NULL); // Reset re-election timer
+                                                           
+                printf("[%u] election interval elapsed: restarting STP\n", config.node_addr);
                 // Node thinks it's now the root
                 stp_route_db.root_address = config.node_addr;
                 stp_route_db.path_length = 0;
@@ -292,11 +306,12 @@ void run_node(void *handle,
                 broadcast_stp(handle, config, stp_packet, &stp_route_db);
                 gettimeofday(&root_hello_timer_start, NULL); //Reset root hello timer start
             }
-
+        
         }
-
     }
 } 
+
+
 
 void broadcast_stp(void *handle, 
                    const struct mixnet_node_config config, 
@@ -330,6 +345,27 @@ void broadcast_stp(void *handle,
     }
 }
 
+void fwd_root_hello(void *handle, 
+                    const struct mixnet_node_config config, 
+                    mixnet_packet *recvd_hello_pkt, 
+                    uint8_t *active_ports,
+                    stp_route_t *stp_route_db)
+{
+    int err=0;
+    mixnet_packet *hello_pkt = malloc(sizeof(mixnet_packet) + sizeof(mixnet_packet_stp)); 
+    memcpy(hello_pkt, recvd_hello_pkt, (sizeof(mixnet_packet) + sizeof(mixnet_packet_stp)));
+
+    for (size_t nid = 0; nid < config.num_neighbors; nid++) {
+        if(active_ports[nid]) {
+            if((err = mixnet_send(handle, nid, hello_pkt)) < 0) {
+                printf("[%u] Error fwd hello_pkt to Node %u\n", config.node_addr, config.neighbor_addrs[nid]);
+                
+            }else{
+                // printf("[%u] Fwd hello_pkt to Node %u\n", config.node_addr, config.neighbor_addrs[nid]);
+            }
+        }
+    }
+}
 void broadcast_flood(void *handle, 
                      const struct mixnet_node_config config, 
                      uint8_t *active_ports) 
