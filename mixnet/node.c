@@ -119,6 +119,19 @@ void run_node(void *handle,
                 
                 //Run Spanning Tree Protocol updates. Brodcast root changes to neighbours as necessary
                 case PACKET_TYPE_STP: {
+
+                    if (!is_root(config, &stp_route_db) && is_hello_root) {
+                        
+                        // Convergence Metrics
+                        gettimeofday(&convergence_timer, NULL); 
+                        printf("[%u] @ %lf us: (my_root: %u, path_len: %u, next_hop: %u) -- in %u STP packets\n", 
+                            config.node_addr,
+                            diff_in_microseconds(convergence_timer_start, convergence_timer) / 1000.0,
+                            stp_route_db.root_address,
+                            stp_route_db.path_length,
+                            stp_route_db.next_hop_address,
+                            STP_pkt_ct);
+                    }
                     
                     recvd_stp_packet = (mixnet_packet_stp*) recvd_packet->payload;
                     is_hello_root = true;
@@ -213,16 +226,6 @@ void run_node(void *handle,
 
                     if (!is_root(config, &stp_route_db) && is_hello_root) {
                         
-                        // Convergence Metrics
-                        gettimeofday(&convergence_timer, NULL); 
-                        printf("[%u] @ %lf us: (my_root: %u, path_len: %u, next_hop: %u) -- in %u STP packets\n", 
-                            config.node_addr,
-                            diff_in_microseconds(convergence_timer_start, convergence_timer) / 1000.0,
-                            stp_route_db.root_address,
-                            stp_route_db.path_length,
-                            stp_route_db.next_hop_address,
-                            STP_pkt_ct);
-
                         stp_ports[recv_port] = 0;
                         broadcast_stp(handle, config, &stp_route_db);
                         stp_ports[recv_port] = 1;
