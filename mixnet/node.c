@@ -120,6 +120,7 @@ void run_node(void *handle,
                 
                 //Run Spanning Tree Protocol updates. Brodcast root changes to neighbours as necessary
                 case PACKET_TYPE_STP: {
+                    STP_pkt_ct++;
 
                     if (!is_root(config, &stp_route_db) && is_hello_root) {
                         
@@ -335,7 +336,6 @@ void broadcast_stp(void *handle,
         if( (err = mixnet_send(handle, nid, broadcast_packet)) < 0) {
             printf("Error sending STP pkt\n");
         }
-        STP_pkt_ct++;
     }
 }
 
