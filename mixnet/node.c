@@ -83,7 +83,6 @@ void run_node(void *handle,
 
 
     struct timeval convergence_timer_start, convergence_timer;
-    gettimeofday(&convergence_timer_start, NULL); // On receiving hello root, reset election timer
                                                   //
     mixnet_packet *recvd_packet = NULL;
     mixnet_packet_stp *recvd_stp_packet = NULL;
@@ -99,6 +98,8 @@ void run_node(void *handle,
         broadcast_stp(handle, config, &stp_route_db);
         gettimeofday(&root_hello_timer_start, NULL); //Reset root hello timer start
     }
+
+    gettimeofday(&convergence_timer_start, NULL); // On receiving hello root, reset election timer
 
     while (*keep_running) {
 
