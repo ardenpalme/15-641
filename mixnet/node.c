@@ -94,6 +94,7 @@ void run_node(void *handle,
     int err=0;
     const int user_port = config.num_neighbors;
     mixnet_address prev_root_address = 200;
+    uint32_t hello_msg_counter = 0;
 
     // Broadcast (My Root, Path Length, My ID) initially 
     if (is_root(config, &stp_route_db)){
@@ -212,17 +213,20 @@ void run_node(void *handle,
                     }
 
                     if (!is_root(config, &stp_route_db) && is_hello_root) {
+                        hello_msg_counter++;
                         
                         // Convergence Metrics
-                        gettimeofday(&convergence_timer, NULL); 
-                        printf("[%u] @ %lf us: (my_root: %u, path_len: %u, next_hop: %u) -- in %u STP packets\n", 
-                            config.node_addr,
-                            diff_in_microseconds(convergence_timer_start, convergence_timer) / 1000.0,
-                            stp_route_db.root_address,
-                            stp_route_db.path_length,
-                            stp_route_db.next_hop_address,
-                            STP_pkt_ct);
-                        prev_root_address = recvd_stp_packet->root_address;
+                        if(hello_msg_counter > 4){
+                            gettimeofday(&convergence_timer, NULL); 
+                            printf("[%u] @ %lf us: (my_root: %u, path_len: %u, next_hop: %u) -- in %u STP packets\n", 
+                                config.node_addr,
+                                diff_in_microseconds(convergence_timer_start, convergence_timer) / 1000.0,
+                                stp_route_db.root_address,
+                                stp_route_db.path_length,
+                                stp_route_db.next_hop_address,
+                                STP_pkt_ct);
+                            prev_root_address = recvd_stp_packet->root_address;
+                        }
 
                         stp_ports[recv_port] = 0;
                         broadcast_stp(handle, config, &stp_route_db);
