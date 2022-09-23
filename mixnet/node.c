@@ -33,7 +33,6 @@ static stp_route_t stp_route_db;
 // STP functions
 void broadcast_stp(void *handle, 
                    const struct mixnet_node_config config, 
-                   mixnet_packet *broadcast_packet, 
                    stp_route_t *stp_route_db);
 void print_stp(const struct mixnet_node_config config, const char *prefix_str, mixnet_packet *packet);
 
@@ -54,14 +53,18 @@ void deactivate_all_ports(const struct mixnet_node_config config, uint8_t *ports
 void port_to_neighbor(const struct mixnet_node_config config, 
                             mixnet_address niegbhor_addr, 
                             uint8_t *ports, 
-                            uint8_t*prev_ports, 
-                            enum port_decision decision,
-                            enum portvec_decision portvec_decision);
+                            enum port_decision decision);
+                            
 void print_ports(const struct mixnet_node_config config, uint8_t *ports);
 
 bool is_root(const struct mixnet_node_config config, stp_route_t *stp_route_db);
 
 uint32_t diff_in_microseconds(struct timeval t0, struct timeval t1);
+
+void fwd_root_hello(void *handle, const struct mixnet_node_config config, 
+                mixnet_packet *recvd_hello_pkt, 
+                uint8_t *active_ports,
+                stp_route_t *stp_route_db);
 
 
 void run_node(void *handle,
@@ -83,7 +86,6 @@ void run_node(void *handle,
     struct timeval election_timer, election_timer_start;
     gettimeofday(&election_timer_start, NULL); //Initial reference point
 
-    mixnet_packet *stp_packet = NULL;
     mixnet_packet *recvd_packet = NULL;
     mixnet_packet_stp *recvd_stp_packet = NULL;
     mixnet_address stp_parent_addr = -1;
@@ -95,7 +97,7 @@ void run_node(void *handle,
 
     // Broadcast (My Root, Path Length, My ID) initially 
     if (is_root(config, &stp_route_db)){
-        broadcast_stp(handle, config, stp_packet, &stp_route_db);
+        broadcast_stp(handle, config, &stp_route_db);
         gettimeofday(&root_hello_timer_start, NULL); //Reset root hello timer start
 
     }
@@ -106,7 +108,7 @@ void run_node(void *handle,
         gettimeofday(&root_hello_timer, NULL);
         if(is_root(config, &stp_route_db) && 
             ((diff_in_microseconds(root_hello_timer_start, root_hello_timer) >= config.root_hello_interval_ms * 1000))) {
-            broadcast_stp(handle, config, stp_packet, &stp_route_db); 
+            broadcast_stp(handle, config, &stp_route_db); 
             gettimeofday(&root_hello_timer_start, NULL); //Reset root hello timer start
         }
 
@@ -121,32 +123,37 @@ void run_node(void *handle,
                     
                     recvd_stp_packet = (mixnet_packet_stp*) recvd_packet->payload;
                     is_hello_root = true;
-                    if(is_root(config, &stp_route_db) || recvd_stp_packet->root_address != recvd_stp_packet->node_address){
-                        #if DEBUG_STP
-                        print_stp(config, "Received ", recvd_packet);
-                        printf("[%u] STP DB: (my_root: %u, path_len: %u, next_hop: %u)\n", 
-                            config.node_addr, 
-                            stp_route_db.root_address,
-                            stp_route_db.path_length,
-                            stp_route_db.next_hop_address);
-                        #endif
-                    }
+                    // printf("STP msg from: %u with root: %u, path length: %u, Node [%u] curr root:%u, curr parent %u \n", 
+                    // recvd_stp_packet->node_address, 
+                    // recvd_stp_packet->root_address, 
+                    // recvd_stp_packet->path_length,
+                    // config.node_addr,
+                    // stp_route_db.root_address,
+                    // stp_parent_addr);
+
+                    // print_ports(config, stp_ports);
 
                     // Receive STP message from smaller ID root node
                     // Make him root and increment path length
                     if(recvd_stp_packet->root_address < stp_route_db.root_address) {
                         is_hello_root = false;
-                        // printf("New Root node is %d Next hop is %u \n", recvd_stp_packet->root_address, recvd_stp_packet->node_address);
+                        // printf("New Root node is %d Next hop is %u \n.", 
+                        // recvd_stp_packet->root_address, recvd_stp_packet->node_address);
+                        // print_ports(config, stp_ports);
+
                         stp_route_db.root_address = recvd_stp_packet->root_address;
                         stp_route_db.path_length = recvd_stp_packet->path_length + 1;
                         stp_route_db.next_hop_address = recvd_stp_packet->node_address;
 
                         stp_parent_addr = recvd_stp_packet->node_address;
                         stp_parent_path_length = recvd_stp_packet->path_length;                        
-                        // port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, NULL, OPEN_PORT, NO_SAVE_PORTS);
 
-                        // tell everyone about new best root candidate
-                        broadcast_stp(handle, config, stp_packet, &stp_route_db);
+                        stp_ports[recv_port] = 1; //Open parent port
+
+                        // tell everyone but informant about new best root candidate
+                        stp_ports[recv_port] = 0;
+                        broadcast_stp(handle, config, &stp_route_db);
+                        stp_ports[recv_port] = 1;
 
 
                     }else if(recvd_stp_packet->root_address == stp_route_db.root_address) {
@@ -157,89 +164,71 @@ void run_node(void *handle,
                             stp_route_db.path_length = recvd_stp_packet->path_length + 1;
                             
                             // printf("Found better path to same root %u with node %u pathlen %u \n", recvd_stp_packet->root_address, recvd_stp_packet->node_address, recvd_stp_packet->path_length);
+                            // print_ports(config, stp_ports);
+
                             
-                            // port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, NULL, OPEN_PORT, NO_SAVE_PORTS);
                             stp_parent_addr = recvd_stp_packet->node_address;
                             stp_parent_path_length = recvd_stp_packet->path_length;   
                             
+                            stp_ports[recv_port] = 1; //Open parent port
                             is_hello_root = false;   
                         
                         //Tie for ID and path length
                         } else if (stp_parent_addr != -1 && recvd_stp_packet->path_length == stp_parent_path_length){
                             // printf("Tied for ID & parent pathlen with node %u pathlen %u \n", recvd_stp_packet->node_address, recvd_stp_packet->path_length);
+                            // printf("Parent %u recvd_node_addr %u \n", stp_parent_addr, recvd_stp_packet->node_address);
                             
                             if (recvd_stp_packet->node_address < stp_parent_addr){
-                                // Severe link for worse parent candidate
-                                port_to_neighbor(config, stp_parent_addr, stp_ports, NULL, BLOCK_PORT, NO_SAVE_PORTS);
+                                // Close port for to-be-removed parent. Open port for new parent
+                                port_to_neighbor(config, stp_parent_addr, stp_ports, BLOCK_PORT);
+                                port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, OPEN_PORT);
 
+                                // printf("Choosing smaller ID path via node %u \n", recvd_stp_packet->node_address);
                                 // choose lesser indexed node to route through
                                 stp_route_db.next_hop_address = recvd_stp_packet->node_address;
                                 stp_parent_addr = recvd_stp_packet->node_address;         
+                                
                                 is_hello_root = false;
 
                             }else if (recvd_stp_packet->node_address > stp_parent_addr){
-                                // Severe link for failed parent candidate
-                                port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, NULL, BLOCK_PORT, NO_SAVE_PORTS);
-
+                                // Close port for failed parent candidate
+                                // printf("Severing link in other direction \n");
+                                port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, BLOCK_PORT);
+                                // print_ports(config, stp_ports);
+                                
+                                is_hello_root = false;
                             }
+                        } else {
+                            is_hello_root = false;
                         }
 
                         // If path advertised is equal to path length, node must be peer, not {child, parent} 
                         if (recvd_stp_packet->path_length == stp_route_db.path_length){
                                 // printf("Tied for ID & pathlen with node %u pathlen %u \n", recvd_stp_packet->node_address, recvd_stp_packet->path_length);
-                                port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, NULL, BLOCK_PORT, NO_SAVE_PORTS);
+                                stp_ports[recv_port] = 0;
                         }
+                    } else {
+                        is_hello_root = false;
+                        port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, OPEN_PORT); //Open child port
                     }
 
-                    // if (stp_parent_addr != -1 && recvd_stp_packet->node_address != stp_parent_addr && 
-                    //     recvd_stp_packet->path_length == stp_parent_path_length){
-
-                    // }
-                        // else if((stp_parent_addr > 0) && (recvd_stp_packet->path_length == stp_parent_path_length)) {
-                        //     // same received advertisement has the path length to the stable root as the path that my parent advertises
-                        //     port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, NULL, BLOCK_PORT, NO_SAVE_PORTS);
-
-                        // }
-                    //     else if(recvd_stp_packet->path_length == stp_route_db.path_length) {
-                    //         if((stp_parent_addr > 0) && (recvd_stp_packet->node_address != stp_parent_addr)){
-                    //             // same path length to stable root, but the node is not my parent
-                    //             port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, NULL, BLOCK_PORT, NO_SAVE_PORTS);
-
-                    //         //Same root, same path length. Choose lesser idexed node to route through
-                    //         }else if(recvd_stp_packet->node_address < stp_route_db.next_hop_address) {
-                    //             stp_route_db.next_hop_address = recvd_stp_packet->node_address;
-                    //             port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, NULL, OPEN_PORT, NO_SAVE_PORTS);
-                    //             stp_parent_addr = recvd_stp_packet->node_address;
-                    //             stp_parent_path_length = recvd_stp_packet->path_length;
-
-                    //             is_hello_root = false;
-                    //         }
-
-                    //     }else{
-                    //         // open the port to this neighboring node because it must be your child
-                    //         port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, NULL, OPEN_PORT, NO_SAVE_PORTS);
-                    //     }
-                    // }
-
                     if (!is_root(config, &stp_route_db) && is_hello_root){
-                        // printf("Received hello root from node %d \n", recvd_stp_packet->node_address);
-                        // printf("Port Neighbour status: ");
-                        // for (int i=0; i < config.num_neighbors; i++){
-                        //     printf("%d ", stp_ports);
-                        // }
-                        // printf("\n");
-                        // print_ports(config, stp_ports);
+                        // printf("Received hello root from node %u on port %u \n", recvd_stp_packet->node_address, recv_port);
+                        
+                        stp_ports[recv_port] = 0;
+                        broadcast_stp(handle, config, &stp_route_db);
+                        stp_ports[recv_port] = 1;
 
                         gettimeofday(&election_timer_start, NULL); // On receiving hello root, reset election timer
                     }
 
                     #if DEBUG_STP
-                    printf("[%u] STP DB: (my_root: %u, path_len: %u, next_hop: %u)\n", 
-                        config.node_addr, 
-                        stp_route_db.root_address,
-                        stp_route_db.path_length,
-                        stp_route_db.next_hop_address);
-                    print_ports(config, stp_ports);
+                    // printf("[%u] STP DB: (my_root: %u, path_len: %u, next_hop: %u)\n", 
+                    //     config.node_addr, 
+                    //     stp_route_db.root_address,
+                    //     stp_route_db.path_length,
+                    //     stp_route_db.next_hop_address);
+                    // print_ports(config, stp_ports);
                     #endif
                     } break;
 
@@ -278,19 +267,22 @@ void run_node(void *handle,
             }
         } else {
             gettimeofday(&election_timer, NULL);
-            if ((diff_in_microseconds(election_timer_start, election_timer) >= config.reelection_interval_ms * 1000)){
-                // printf("election interval elapsed. Node %d thinks it's root \n", config.node_addr);
-                // Node thinks it's now the root
+            if ((!is_root(config, &stp_route_db) && diff_in_microseconds(election_timer_start, election_timer) >= config.reelection_interval_ms * 1000)){
+                gettimeofday(&election_timer_start, NULL);
+                // printf("election interval elapsed. Resetting ports. Node %d thinks it's root \n", config.node_addr);
+                // print_ports(config, stp_ports);
+                // Node thinks it's now the root. Forget about stale spanning tree
                 stp_route_db.root_address = config.node_addr;
                 stp_route_db.path_length = 0;
                 stp_route_db.next_hop_address = config.node_addr;
-                // Forget about stale spanning tree
                 activate_all_ports(config, stp_ports);
-
                 stp_parent_addr = -1;
                 stp_parent_path_length = -1;
-                broadcast_stp(handle, config, stp_packet, &stp_route_db);
-                gettimeofday(&root_hello_timer_start, NULL); //Reset root hello timer start
+
+                //Reset hello_timer_start
+                broadcast_stp(handle, config, &stp_route_db);
+                gettimeofday(&root_hello_timer_start, NULL); 
+
             }
 
         }
@@ -300,13 +292,12 @@ void run_node(void *handle,
 
 void broadcast_stp(void *handle, 
                    const struct mixnet_node_config config, 
-                   mixnet_packet *broadcast_packet, 
                    stp_route_t *stp_route_db)
 {
     mixnet_packet_stp stp_payload;
     int err=0;
     for (size_t nid = 0; nid < config.num_neighbors; nid++) {
-        broadcast_packet = malloc(sizeof(mixnet_packet) + sizeof(mixnet_packet_stp));
+        mixnet_packet* broadcast_packet = malloc(sizeof(mixnet_packet) + sizeof(mixnet_packet_stp));
         broadcast_packet->src_address = config.node_addr;
         broadcast_packet->dst_address = config.neighbor_addrs[nid];
         broadcast_packet->type = PACKET_TYPE_STP;
@@ -319,7 +310,7 @@ void broadcast_stp(void *handle,
         memcpy(broadcast_packet->payload, &stp_payload, sizeof(mixnet_packet_stp));
 
         #if DEBUG_STP
-        printf("[%u] Broadcast (%u, %u, %u)\n", 
+        printf("[%u] Broadcast (%u, %u, %u) to neighbours\n", 
             config.node_addr,
             stp_payload.root_address, stp_payload.path_length, stp_payload.node_address);
         #endif
@@ -385,30 +376,18 @@ void deactivate_all_ports(const struct mixnet_node_config config, uint8_t *ports
 void port_to_neighbor(const struct mixnet_node_config config, 
                         mixnet_address niegbhor_addr, 
                         uint8_t *ports, 
-                        uint8_t*prev_ports, 
-                        enum port_decision decision,
-                        enum portvec_decision portvec_decision) 
-{
-    size_t len_port_vec = config.num_neighbors * sizeof(uint8_t); // bytes
+                        enum port_decision decision) {
     
-    if(portvec_decision == RESTORE_PORTS){
-        memcpy(ports, prev_ports, len_port_vec);
-        
-    }else if(portvec_decision == SAVE_PORTS){
-        memcpy(prev_ports, ports, len_port_vec);
-    }
-
     for(int nid=0; nid<config.num_neighbors; nid++){
         if(config.neighbor_addrs[nid] == niegbhor_addr){
 
             if(decision == BLOCK_PORT)
                 ports[nid] = 0;
-
             else if(decision == OPEN_PORT)
-                ports[nid] = 1;
+                ports[nid] = 1;      
+            break;
         }
-    }
-    
+    } 
 }
 
 void print_ports(const struct mixnet_node_config config, uint8_t *ports){
@@ -451,3 +430,35 @@ int get_port_from_addr(const struct mixnet_node_config config, mixnet_address ne
 uint32_t diff_in_microseconds(struct timeval b4, struct timeval later){
     return (later.tv_sec - b4.tv_sec) * 1000000 + (later.tv_usec - b4.tv_usec);
 }
+
+// void fwd_root_hello(void *handle,
+//                     const struct mixnet_node_config config,
+//                     mixnet_packet *recvd_hello_pkt,
+//                     uint8_t *active_ports,
+//                     stp_route_t *stp_route_db)
+// {
+//     int err=0;
+//     mixnet_packet_stp stp_payload;
+
+//     mixnet_packet *hello_pkt = malloc(sizeof(mixnet_packet) + sizeof(mixnet_packet_stp));
+//     memcpy(hello_pkt, recvd_hello_pkt, (sizeof(mixnet_packet) + sizeof(mixnet_packet_stp)));
+
+//     for (size_t nid = 0; nid < config.num_neighbors; nid++) {
+//         if(active_ports[nid]) {
+//             hello_pkt->src_address = config.node_addr;
+//             hello_pkt->dst_address = config.neighbor_addrs[nid];
+            
+//             stp_payload.node_address = config.node_addr;
+//             stp_payload.path_length = ;
+//             stp_payload.root_address = ;
+//             memcpy(hello_pkt->payload, &stp_payload, sizeof(mixnet_packet_stp));
+
+//             if((err = mixnet_send(handle, nid, hello_pkt)) < 0) {
+//                 // printf("[%u] Error fwd hello_pkt to Node %u\n", config.node_addr, config.neighbor_addrs[nid]);
+//                 // print_ports(config, active_ports);
+//             } else{
+//                 // printf("[%u] Fwd hello_pkt to Node %u\n", config.node_addr, config.neighbor_addrs[nid]);
+//             }
+//         }
+//     }
+// }
