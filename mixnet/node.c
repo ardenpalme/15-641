@@ -35,6 +35,7 @@ void broadcast_stp(void *handle,
                    const struct mixnet_node_config config, 
                    stp_route_t *stp_route_db);
 void print_stp(const struct mixnet_node_config config, const char *prefix_str, mixnet_packet *packet);
+uint32_t STP_pkt_ct; // Metrics
 
 // FLOOD functions
 void broadcast_flood(void *handle, 
@@ -60,6 +61,7 @@ bool is_root(const struct mixnet_node_config config, stp_route_t *stp_route_db);
 
 uint32_t diff_in_microseconds(struct timeval t0, struct timeval t1);
 
+
 void run_node(void *handle,
               volatile bool *keep_running,
               const struct mixnet_node_config config) {
@@ -79,6 +81,10 @@ void run_node(void *handle,
     struct timeval election_timer, election_timer_start;
     gettimeofday(&election_timer_start, NULL); //Initial reference point
 
+
+    struct timeval convergence_timer_start, convergence_timer;
+    gettimeofday(&convergence_timer_start, NULL); // On receiving hello root, reset election timer
+                                                  //
     mixnet_packet *recvd_packet = NULL;
     mixnet_packet_stp *recvd_stp_packet = NULL;
     mixnet_address stp_parent_addr = -1;
@@ -87,12 +93,12 @@ void run_node(void *handle,
     
     int err=0;
     const int user_port = config.num_neighbors;
+    mixnet_address prev_root_address = 200;
 
     // Broadcast (My Root, Path Length, My ID) initially 
     if (is_root(config, &stp_route_db)){
         broadcast_stp(handle, config, &stp_route_db);
         gettimeofday(&root_hello_timer_start, NULL); //Reset root hello timer start
-
     }
 
     while (*keep_running) {
@@ -206,15 +212,28 @@ void run_node(void *handle,
                     }
 
                     if (!is_root(config, &stp_route_db) && is_hello_root){
-                        // printf("Received hello root from node %u on port %u \n", recvd_stp_packet->node_address, recv_port);
                         
+                        // Convergence Metrics
+                        if(stp_route_db.root_address != prev_root_address){
+                            gettimeofday(&convergence_timer, NULL); 
+                            printf("[%u] @ %lf us: (my_root: %u, path_len: %u, next_hop: %u) -- in %u STP packets\n", 
+                                config.node_addr,
+                                (double)diff_in_microseconds(convergence_timer_start, convergence_timer) / 1000.0,
+                                stp_route_db.root_address,
+                                stp_route_db.path_length,
+                                stp_route_db.next_hop_address,
+                                STP_pkt_ct);
+                            prev_root_address = recvd_stp_packet->root_address;
+                        }
+
                         stp_ports[recv_port] = 0;
                         broadcast_stp(handle, config, &stp_route_db);
                         stp_ports[recv_port] = 1;
 
                         gettimeofday(&election_timer_start, NULL); // On receiving hello root, reset election timer
+                        
                     }
-
+                    
                     #if DEBUG_STP
                     // printf("[%u] STP DB: (my_root: %u, path_len: %u, next_hop: %u)\n", 
                     //     config.node_addr, 
@@ -311,6 +330,7 @@ void broadcast_stp(void *handle,
         if( (err = mixnet_send(handle, nid, broadcast_packet)) < 0) {
             printf("Error sending STP pkt\n");
         }
+        STP_pkt_ct++;
     }
 }
 
