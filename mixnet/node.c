@@ -46,7 +46,6 @@ void print_packet_header(mixnet_packet *pkt);
 int get_port_from_addr(const struct mixnet_node_config config, mixnet_address next_hop_address, uint8_t *stp_ports);
 
 // Port-handling functions
-enum portvec_decision {RESTORE_PORTS, SAVE_PORTS, NO_SAVE_PORTS};
 enum port_decision {BLOCK_PORT, OPEN_PORT};
 void activate_all_ports(const struct mixnet_node_config config, uint8_t *ports);
 void deactivate_all_ports(const struct mixnet_node_config config, uint8_t *ports);
@@ -60,12 +59,6 @@ void print_ports(const struct mixnet_node_config config, uint8_t *ports);
 bool is_root(const struct mixnet_node_config config, stp_route_t *stp_route_db);
 
 uint32_t diff_in_microseconds(struct timeval t0, struct timeval t1);
-
-void fwd_root_hello(void *handle, const struct mixnet_node_config config, 
-                mixnet_packet *recvd_hello_pkt, 
-                uint8_t *active_ports,
-                stp_route_t *stp_route_db);
-
 
 void run_node(void *handle,
               volatile bool *keep_running,
@@ -430,35 +423,3 @@ int get_port_from_addr(const struct mixnet_node_config config, mixnet_address ne
 uint32_t diff_in_microseconds(struct timeval b4, struct timeval later){
     return (later.tv_sec - b4.tv_sec) * 1000000 + (later.tv_usec - b4.tv_usec);
 }
-
-// void fwd_root_hello(void *handle,
-//                     const struct mixnet_node_config config,
-//                     mixnet_packet *recvd_hello_pkt,
-//                     uint8_t *active_ports,
-//                     stp_route_t *stp_route_db)
-// {
-//     int err=0;
-//     mixnet_packet_stp stp_payload;
-
-//     mixnet_packet *hello_pkt = malloc(sizeof(mixnet_packet) + sizeof(mixnet_packet_stp));
-//     memcpy(hello_pkt, recvd_hello_pkt, (sizeof(mixnet_packet) + sizeof(mixnet_packet_stp)));
-
-//     for (size_t nid = 0; nid < config.num_neighbors; nid++) {
-//         if(active_ports[nid]) {
-//             hello_pkt->src_address = config.node_addr;
-//             hello_pkt->dst_address = config.neighbor_addrs[nid];
-            
-//             stp_payload.node_address = config.node_addr;
-//             stp_payload.path_length = ;
-//             stp_payload.root_address = ;
-//             memcpy(hello_pkt->payload, &stp_payload, sizeof(mixnet_packet_stp));
-
-//             if((err = mixnet_send(handle, nid, hello_pkt)) < 0) {
-//                 // printf("[%u] Error fwd hello_pkt to Node %u\n", config.node_addr, config.neighbor_addrs[nid]);
-//                 // print_ports(config, active_ports);
-//             } else{
-//                 // printf("[%u] Fwd hello_pkt to Node %u\n", config.node_addr, config.neighbor_addrs[nid]);
-//             }
-//         }
-//     }
-// }
