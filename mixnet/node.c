@@ -59,7 +59,7 @@ void print_ports(const struct mixnet_node_config config, uint8_t *ports);
 
 bool is_root(const struct mixnet_node_config config, stp_route_t *stp_route_db);
 
-uint32_t diff_in_microseconds(struct timeval t0, struct timeval t1);
+double diff_in_microseconds(struct timeval t0, struct timeval t1);
 
 
 void run_node(void *handle,
@@ -94,6 +94,7 @@ void run_node(void *handle,
     int err=0;
     const int user_port = config.num_neighbors;
     mixnet_address prev_root_address = 200;
+    uint32_t hello_msg_counter = 0;
 
     // Broadcast (My Root, Path Length, My ID) initially 
     if (is_root(config, &stp_route_db)){
@@ -211,14 +212,15 @@ void run_node(void *handle,
                         port_to_neighbor(config, recvd_stp_packet->node_address, stp_ports, OPEN_PORT); //Open child port
                     }
 
-                    if (!is_root(config, &stp_route_db) && is_hello_root){
+                    if (!is_root(config, &stp_route_db) && is_hello_root) {
+                        hello_msg_counter++;
                         
                         // Convergence Metrics
-                        if(stp_route_db.root_address != prev_root_address){
+                        if(hello_msg_counter == 2){
                             gettimeofday(&convergence_timer, NULL); 
                             printf("[%u] @ %lf us: (my_root: %u, path_len: %u, next_hop: %u) -- in %u STP packets\n", 
                                 config.node_addr,
-                                (double)diff_in_microseconds(convergence_timer_start, convergence_timer) / 1000.0,
+                                diff_in_microseconds(convergence_timer_start, convergence_timer) / 1000.0,
                                 stp_route_db.root_address,
                                 stp_route_db.path_length,
                                 stp_route_db.next_hop_address,
@@ -232,7 +234,10 @@ void run_node(void *handle,
 
                         gettimeofday(&election_timer_start, NULL); // On receiving hello root, reset election timer
                         
+                    }else{
+                        hello_msg_counter = 0;
                     }
+
                     
                     #if DEBUG_STP
                     // printf("[%u] STP DB: (my_root: %u, path_len: %u, next_hop: %u)\n", 
@@ -440,6 +445,6 @@ int get_port_from_addr(const struct mixnet_node_config config, mixnet_address ne
 }
 
 
-uint32_t diff_in_microseconds(struct timeval b4, struct timeval later){
+double diff_in_microseconds(struct timeval b4, struct timeval later){
     return (later.tv_sec - b4.tv_sec) * 1000000 + (later.tv_usec - b4.tv_usec);
 }
