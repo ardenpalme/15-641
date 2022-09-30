@@ -5,15 +5,16 @@
 #include "connection.h"
 #include "address.h"
 
+struct adjacency_node {
+    mixnet_address vert;
+    struct adjacency_node *next;
+};
+typedef struct adjacency_node* adj_node_t;
+
 typedef struct {
     uint16_t size;
     adj_node_t **adj;
 } graph_t;
-
-typedef struct {
-    mixnet_address vert;
-    adj_node_t *next;
-} adj_node_t;
 
 // for iterating through all of the neighbors of a node
 typedef struct {
