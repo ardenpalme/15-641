@@ -11,6 +11,7 @@
 #include "node.h"
 
 #include "connection.h"
+#include "graph.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -86,6 +87,7 @@ void run_node(void *handle,
                                                   //
     mixnet_packet *recvd_packet = NULL;
     mixnet_packet_stp *recvd_stp_packet = NULL;
+    mixnet_packet_lsa *recvd_lsa_packet = NULL;
     mixnet_address stp_parent_addr = -1;
     uint16_t stp_parent_path_length = -1;
     uint8_t recv_port;
@@ -101,6 +103,7 @@ void run_node(void *handle,
     }
 
     gettimeofday(&convergence_timer_start, NULL); // On receiving hello root, reset election timer
+    
 
     while (*keep_running) {
 
@@ -140,15 +143,18 @@ void run_node(void *handle,
                     
                     recvd_stp_packet = (mixnet_packet_stp*) recvd_packet->payload;
                     is_hello_root = true;
-                    // printf("STP msg from: %u with root: %u, path length: %u, Node [%u] curr root:%u, curr parent %u \n", 
-                    // recvd_stp_packet->node_address, 
-                    // recvd_stp_packet->root_address, 
-                    // recvd_stp_packet->path_length,
-                    // config.node_addr,
-                    // stp_route_db.root_address,
-                    // stp_parent_addr);
 
-                    // print_ports(config, stp_ports);
+                    #if DEBUG_STP
+                    printf("STP msg from: %u with root: %u, path length: %u, Node [%u] curr root:%u, curr parent %u \n", 
+                        recvd_stp_packet->node_address, 
+                        recvd_stp_packet->root_address, 
+                        recvd_stp_packet->path_length,
+                        config.node_addr,
+                        stp_route_db.root_address,
+                        stp_parent_addr);
+
+                    print_ports(config, stp_ports);
+                    #endif
 
                     // Receive STP message from smaller ID root node
                     // Make him root and increment path length
@@ -238,16 +244,16 @@ void run_node(void *handle,
                         gettimeofday(&election_timer_start, NULL); // On receiving hello root, reset election timer
                         
                     }
-
                     
                     #if DEBUG_STP
-                    // printf("[%u] STP DB: (my_root: %u, path_len: %u, next_hop: %u)\n", 
-                    //     config.node_addr, 
-                    //     stp_route_db.root_address,
-                    //     stp_route_db.path_length,
-                    //     stp_route_db.next_hop_address);
-                    // print_ports(config, stp_ports);
+                    printf("[%u] STP DB: (my_root: %u, path_len: %u, next_hop: %u)\n", 
+                        config.node_addr, 
+                        stp_route_db.root_address,
+                        stp_route_db.path_length,
+                        stp_route_db.next_hop_address);
+                    print_ports(config, stp_ports);
                     #endif
+
                     } break;
 
                 case PACKET_TYPE_FLOOD: {
@@ -280,6 +286,19 @@ void run_node(void *handle,
                         #endif
                     }                    
                     } break;
+                                        
+                case PACKET_TYPE_LSA: {
+                    recvd_lsa_packet = (mixnet_packet_lsa*) recvd_packet->payload;
+                    printf("node %u has neighbors {", recvd_lsa_packet->node_address);
+                    for(int i=0; i<recvd_lsa_packet->neighbor_count; i++) {
+                        mixnet_address *neighbor_addr= ((mixnet_address*) &(recvd_lsa_packet->neighbor_count)) + i;
+                        //graph_add_edge(stp_tree_graph, recvd_lsa_packet->node_address, *neighbor);
+                        printf("%u", *neighbor_addr);
+                        if(i < recvd_lsa_packet->neighbor_count -1) 
+                            printf(", ");
+                    }
+                    printf("}\n");
+                } break;
                 
                 default: break;
             }
