@@ -2,7 +2,7 @@
 add_compile_options(-m64 -O3 -Wall)
 
 link_libraries(sctp message_queue)
-add_library(mixnet SHARED connection.c)
+add_library(mixnet SHARED connection.c graph.c)
 
 # Compile node
 link_libraries(mixnet

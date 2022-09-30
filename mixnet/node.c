@@ -8,15 +8,14 @@
  * No part of the Mixnet project may be copied and/or distributed
  * without the express permission of the 15-441/641 course staff.
  */
-#include "node.h"
-
-#include "connection.h"
-#include "graph.h"
-
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
+
+#include "node.h"
+#include "connection.h"
+#include "graph.h"
 
 #define DEBUG_FLOOD 0
 #define DEBUG_STP 0
@@ -48,6 +47,15 @@ void broadcast_flood(void *handle,
 void broadcast_lsa(void *handle, 
                      const struct mixnet_node_config config, 
                      uint8_t *active_ports);
+
+void fwd_lsa(void *handle, 
+             const struct mixnet_node_config config, 
+             uint8_t *active_ports,
+             mixnet_address *neighbor_list,
+             uint16_t neighbors_ct);
+
+// maximum number of nodes in CP2 tests
+const uint16_t max_test_nodes = 20;
 
 // Generic functions 
 void print_packet_header(mixnet_packet *pkt);
@@ -102,10 +110,8 @@ void run_node(void *handle,
     const int user_port = config.num_neighbors;
     bool printed_convergence= false;
     
+    graph_t *net_graph = graph_init();
     
-    mixnet_address new_neighbors_nodes[] = malloc(sizeof(mixnet_address) * config.num_neighbors);
-    ssize_t new_neighbors_nodes_ct = 0;
-
     // Broadcast (My Root, Path Length, My ID) initially 
     if (is_root(config, &stp_route_db)){
         broadcast_stp(handle, config, &stp_route_db);
@@ -304,24 +310,20 @@ void run_node(void *handle,
                     recvd_lsa_packet = (mixnet_packet_lsa*) recvd_packet->payload;
                     mixnet_address *neighbor_node_list = (mixnet_address*) ((uint8_t*)&(recvd_packet->payload) + sizeof(mixnet_packet_lsa));
 
-
                     printf("[%u] node %u has neighbors {", config.node_addr, recvd_lsa_packet->node_address);
                     for(int i=0; i<recvd_lsa_packet->neighbor_count; i++) {
-                        
-                        // add any newly-discovered neighbors of neighbors to tell others about them
-                        if(neighbor_node_list[i] != config.node_addr){
-                            new_neighbors_nodes[new_neighbors_nodes_ct++] = neighbor_node_list[i];
-                        }
-
                         printf("%u", neighbor_node_list[i]);
                         if(i < recvd_lsa_packet->neighbor_count -1) 
                             printf(", ");
                     }
                     printf("}\n");
 
+                    graph_add_neighbors(net_graph, recvd_lsa_packet->node_address, neighbor_node_list, recvd_lsa_packet->neighbor_count);
+                    print_graph(net_graph);
+
                     // Temporarily block receiving port while broadcasting to other neighbours
                     stp_ports[recv_port] = 0;
-                    fwd_lsa(handle, config, stp_ports, new_neighbors_nodes);
+                    fwd_lsa(handle, config, stp_ports, neighbor_node_list, recvd_lsa_packet->neighbor_count);
                     stp_ports[recv_port] = 1;
 
                 } break;
@@ -420,7 +422,7 @@ void broadcast_lsa(void *handle,
     mixnet_packet *lsa_pkt;
     mixnet_packet_lsa lsa_payload;
 
-    mixnet_address neighbor_list[max_nodes];
+    mixnet_address neighbor_list[max_test_nodes];
     for (size_t nid = 0; nid < config.num_neighbors; nid++) { 
         neighbor_list[nid] = config.neighbor_addrs[nid];
     }
@@ -457,17 +459,34 @@ void broadcast_lsa(void *handle,
 void fwd_lsa(void *handle, 
              const struct mixnet_node_config config, 
              uint8_t *active_ports,
-             mixnet_packet *recvd_lsa_pkt) 
+             mixnet_address *neighbor_list,
+             uint16_t neighbors_ct)
 {
     int err=0;
+    mixnet_packet *lsa_pkt;
+    mixnet_packet_lsa lsa_payload;
 
-    for (size_t nid = 0; nid < config.num_neighbors; nid++) {
+    for (size_t nid = 0; nid < neighbors_ct; nid++) {
         if(active_ports[nid]) {
-            recvd_lsa_pkt->src_address = config.node_addr;
-            recvd_lsa_pkt->dst_address = config.neighbor_addrs[nid];
 
-            if( (err = mixnet_send(handle, nid, recvd_lsa_pkt)) < 0){
-                printf("Error sending LSA pkt\n");
+            lsa_pkt = malloc(sizeof(mixnet_packet) 
+                            + sizeof(mixnet_packet_lsa) 
+                            + (sizeof(mixnet_address) * neighbors_ct)); 
+
+            lsa_pkt->src_address = config.node_addr;
+            lsa_pkt->dst_address = config.neighbor_addrs[nid];
+            lsa_pkt->type = PACKET_TYPE_LSA;
+            lsa_pkt->payload_size = 4 + (2*neighbors_ct);
+
+            lsa_payload.node_address = config.node_addr;
+            lsa_payload.neighbor_count = neighbors_ct;
+            memcpy(lsa_pkt->payload, &lsa_payload, sizeof(mixnet_packet_lsa));
+
+            memcpy((uint8_t*)&(lsa_pkt->payload) + sizeof(mixnet_packet_lsa), 
+                neighbor_list, sizeof(mixnet_address)*neighbors_ct);
+
+            if((err = mixnet_send(handle, nid, lsa_pkt)) < 0) {
+                printf("Error fwd LSA pkt\n");
             }
 
             printf("[%u] Fwd LSA to Node %u\n", 

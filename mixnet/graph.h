@@ -1,30 +1,30 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
+#ifndef GRAPH_H
+#define GRAPH_H
 
 #include "connection.h"
 #include "address.h"
 
 struct adjacency_node {
-    mixnet_address vert;
+    mixnet_address addr;
     struct adjacency_node *next;
 };
-typedef struct adjacency_node* adj_node_t;
+typedef struct adjacency_node adj_node_t;
+
+struct adjacency_vert {
+    mixnet_address addr;
+    adj_node_t *adj_list;
+    struct adjacency_vert *next_vert;
+};
+typedef struct adjacency_vert adj_vert_t;
 
 typedef struct {
-    uint16_t size;
-    adj_node_t **adj;
+    adj_vert_t *head;
+    adj_vert_t *tail;
+    uint16_t    num_vert;
 } graph_t;
 
-// for iterating through all of the neighbors of a node
-typedef struct {
-    adj_node_t *next_neighbor;
-} neighbors_t;
+graph_t *graph_init(void);
+void graph_add_neighbors(graph_t *net_graph, mixnet_address vert_node, mixnet_address *node_list, uint16_t node_count);
+void print_graph(graph_t *net_graph);
 
-const uint8_t max_nodes = 10;
-
-void graph_init(graph_t *graph, uint16_t size);
-void graph_free(graph_t *graph);
-void graph_add_edge(graph_t *graph, mixnet_address addr_A, mixnet_address addr_B);
-neighbors_t *graph_get_neighbors(graph_t *graph, mixnet_address vert);
-mixnet_address graph_next_neighbor(neighbors_t *nbors);
+#endif 
