@@ -31,7 +31,8 @@ void graph_add_neighbors(graph_t *net_graph, mixnet_address vert_node, mixnet_ad
 
     for(uint16_t node_idx=0; node_idx < node_count; node_idx++){
         node_in_graph = adj_list_has_node(net_graph, adj_vertex, node_list[node_idx]);
-        if(!node_in_graph) {
+        if(!node_in_graph && 
+          (node_list[node_idx] != adj_vertex->addr)) {
             node = malloc(sizeof(adj_node_t));
             node->addr = node_list[node_idx];
             node->next = NULL;

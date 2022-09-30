@@ -310,6 +310,7 @@ void run_node(void *handle,
                     recvd_lsa_packet = (mixnet_packet_lsa*) recvd_packet->payload;
                     mixnet_address *neighbor_node_list = (mixnet_address*) ((uint8_t*)&(recvd_packet->payload) + sizeof(mixnet_packet_lsa));
 
+                    
                     printf("[%u] node %u has neighbors {", config.node_addr, recvd_lsa_packet->node_address);
                     for(int i=0; i<recvd_lsa_packet->neighbor_count; i++) {
                         printf("%u", neighbor_node_list[i]);
@@ -317,9 +318,12 @@ void run_node(void *handle,
                             printf(", ");
                     }
                     printf("}\n");
+                    
 
                     graph_add_neighbors(net_graph, recvd_lsa_packet->node_address, neighbor_node_list, recvd_lsa_packet->neighbor_count);
+                    printf("[%u] Internal Graph:\n", config.node_addr);
                     print_graph(net_graph);
+                    printf("====================\n");
 
                     // Temporarily block receiving port while broadcasting to other neighbours
                     stp_ports[recv_port] = 0;
