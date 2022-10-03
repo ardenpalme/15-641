@@ -3,6 +3,7 @@
 
 #include "connection.h"
 #include "address.h"
+#include "queue.h"
 
 struct adjacency_node {
     mixnet_address addr;
@@ -12,7 +13,8 @@ typedef struct adjacency_node adj_node_t;
 
 struct adjacency_vert {
     mixnet_address addr;
-    adj_node_t *adj_list;
+    adj_node_t *adj_list; // Node's list of neighbours
+    path_t *hop_list; //Path to get to node
     struct adjacency_vert *next_vert;
 };
 typedef struct adjacency_vert adj_vert_t;
@@ -24,7 +26,8 @@ typedef struct {
 } graph_t;
 
 graph_t *graph_init(void);
-void graph_add_neighbors(graph_t *net_graph, mixnet_address vert_node, mixnet_address *node_list, uint16_t node_count);
+adj_vert_t *get_adj_vertex(graph_t *net_graph, mixnet_address vert_node);
+bool graph_add_neighbors(graph_t *net_graph, mixnet_address vert_node, mixnet_address *node_list, uint16_t node_count);
 void print_graph(graph_t *net_graph);
 
 #endif 

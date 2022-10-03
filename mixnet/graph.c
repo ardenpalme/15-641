@@ -12,7 +12,6 @@
 bool adj_list_has_node(graph_t *net_graph, adj_vert_t *adj_vertex, mixnet_address node_addr);
 adj_vert_t *find_vertex(graph_t *net_graph, mixnet_address vert_node);
 
-adj_vert_t *get_adj_vertex(graph_t *net_graph, mixnet_address vert_node);
 void print_graph(graph_t *net_graph);
 
 graph_t *graph_init(void) {
@@ -23,24 +22,27 @@ graph_t *graph_init(void) {
     return graph;
 }
 
-void graph_add_neighbors(graph_t *net_graph, mixnet_address vert_node, mixnet_address *node_list, uint16_t node_count) {
+bool graph_add_neighbors(graph_t *net_graph, mixnet_address vert_node, mixnet_address *node_list, uint16_t node_count) {
     adj_vert_t *adj_vertex = get_adj_vertex(net_graph, vert_node);
     adj_node_t *node;
     adj_node_t *search_node;
     bool node_in_graph = false;
+    bool added = false;
 
     for(uint16_t node_idx=0; node_idx < node_count; node_idx++){
         node_in_graph = adj_list_has_node(net_graph, adj_vertex, node_list[node_idx]);
-        if(!node_in_graph && 
-          (node_list[node_idx] != adj_vertex->addr)) {
+        
+        if(!node_in_graph) {
+            added = true;
             node = malloc(sizeof(adj_node_t));
             node->addr = node_list[node_idx];
             node->next = NULL;
 
+            // Insert neighbour at start of vertex adjacency list
             if(adj_vertex->adj_list == NULL){
                 adj_vertex->adj_list = node;
 
-            // non-empty adj list for that vertex
+            // Insert neighbour at end of vertex adjacency list
             }else{
                 search_node = adj_vertex->adj_list;
                 while(search_node->next != NULL){
@@ -51,6 +53,8 @@ void graph_add_neighbors(graph_t *net_graph, mixnet_address vert_node, mixnet_ad
             }
         }
     }
+
+    return added;
 }
 
 bool adj_list_has_node(graph_t *net_graph, adj_vert_t *adj_vertex, mixnet_address node_addr) {
@@ -114,7 +118,8 @@ adj_vert_t *get_adj_vertex(graph_t *net_graph, mixnet_address vert_node) {
             adj_vertex->next_vert = NULL;
 
             net_graph->tail->next_vert = adj_vertex;        
-            net_graph->tail = adj_vertex;        
+            net_graph->tail = adj_vertex;  
+            net_graph->num_vert++;      
         }
     }
     return adj_vertex;
