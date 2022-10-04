@@ -76,7 +76,16 @@ bool is_root(const struct mixnet_node_config config, stp_route_t *stp_route_db);
 
 double diff_in_microseconds(struct timeval t0, struct timeval t1);
 
-void get_shortest_paths(const struct mixnet_node_config config, const graph_t *net_graph);
+void get_shortest_paths(const struct mixnet_node_config config, graph_t *net_graph);
+
+void send_packet_from_source(void* handle,
+                            const struct mixnet_node_config config,
+                            mixnet_packet* recvd_packet,
+                            graph_t *net_graph);
+
+void fwd_data_packet(void* handle, const struct mixnet_node_config config, 
+                    mixnet_packet* recvd_packet, graph_t* net_graph);
+
 
 
 void run_node(void *handle,
@@ -102,13 +111,10 @@ void run_node(void *handle,
     struct timeval convergence_timer_start, convergence_timer;
                                                   //
     mixnet_packet *recvd_packet = NULL;
-    mixnet_packet_stp *recvd_stp_packet = NULL;
-    mixnet_packet_lsa *recvd_lsa_packet = NULL;
     mixnet_address stp_parent_addr = -1;
     uint16_t stp_parent_path_length = -1;
     uint8_t recv_port;
     
-    int err=0;
     const int user_port = config.num_neighbors;
     bool printed_convergence= false;
     
@@ -148,7 +154,7 @@ void run_node(void *handle,
                 case PACKET_TYPE_STP: {
                     STP_pkt_ct++;
                     
-                    recvd_stp_packet = (mixnet_packet_stp*) recvd_packet->payload;
+                    mixnet_packet_stp* recvd_stp_packet = (mixnet_packet_stp*) recvd_packet->payload;
                     is_hello_root = true;
 
                     // Receive STP message from smaller ID root node
@@ -231,7 +237,7 @@ void run_node(void *handle,
                     }
 
                     
-                    } break;
+                } break;
 
                 case PACKET_TYPE_FLOOD: {
 
@@ -243,6 +249,7 @@ void run_node(void *handle,
                     if(stp_ports[recv_port] && recv_port != user_port) {
 
                         // Forward received FLOOD from neighbour via OUTPUT port to user stack
+                        int err=0;
                         if( (err = mixnet_send(handle, user_port, recvd_packet)) < 0){
                             printf("Error sending FLOOD pkt to user\n");
                         }
@@ -252,10 +259,10 @@ void run_node(void *handle,
                         broadcast_flood(handle, config, stp_ports);
                         stp_ports[recv_port] = 1;
                     }                    
-                    } break;
+                } break;
                                         
                 case PACKET_TYPE_LSA: {
-                    recvd_lsa_packet = (mixnet_packet_lsa*) recvd_packet->payload;
+                    mixnet_packet_lsa* recvd_lsa_packet = (mixnet_packet_lsa*) recvd_packet->payload;
                     mixnet_address *neighbor_node_list = (mixnet_address*) ((uint8_t*)&(recvd_packet->payload) + sizeof(mixnet_packet_lsa));
 
                     
@@ -270,7 +277,7 @@ void run_node(void *handle,
 
                     bool updated = graph_add_neighbors(net_graph, recvd_lsa_packet->node_address, 
                                                         neighbor_node_list, recvd_lsa_packet->neighbor_count);
-                    if (!updated) get_shortest_paths(config, net_graph);
+                    if (!config.use_random_routing && updated) get_shortest_paths(config, net_graph);
 
                     printf("[%u] Internal Graph:\n", config.node_addr);
                     print_graph(net_graph);
@@ -282,7 +289,25 @@ void run_node(void *handle,
                     stp_ports[recv_port] = 1;
 
                 } break;
-                
+
+                case PACKET_TYPE_DATA: {
+                    mixnet_packet_routing_header* recvd_data_packet = (mixnet_packet_routing_header*) recvd_packet->payload;
+                    // Source route new packet
+                    if (recv_port == user_port){
+                        send_packet_from_source(handle, config, recvd_packet, net_graph);
+
+                    // Packet arrived at destination send to user stack
+                    } else if (recvd_packet->dst_address == config.node_addr){
+                        int err = 0;
+                        if( (err = mixnet_send(handle, user_port, recvd_packet)) < 0){
+                            printf("Error sending FLOOD pkt to user\n");
+                        }
+
+                    // Packet along forwarding route, forward packet
+                    } else {
+                        fwd_data_packet(handle, config, recvd_packet, net_graph);
+                    }
+                } break;
                 default: break;
             }
         } else {
@@ -445,6 +470,109 @@ void fwd_lsa(void *handle,
     }
 }
 
+void send_packet_from_source(void* handle,
+                            const struct mixnet_node_config config,
+                            mixnet_packet* recvd_packet,
+                            graph_t *net_graph){
+
+    // Get hop length (initially for malloc purposes)                           
+    path_t* hop_list = get_adj_vertex(net_graph, recvd_packet->dst_address)->hop_list;
+    u_int32_t cnt = 0;
+    while (hop_list != NULL){
+        if (hop_list->addr == recvd_packet->dst_address) break;    
+        hop_list = hop_list->next;
+        cnt++;
+    }
+
+    size_t tot_size = sizeof(mixnet_packet) +
+                                    sizeof(mixnet_packet_routing_header) +
+                                    (cnt * sizeof(mixnet_address)) + 
+                                    recvd_packet->payload_size; //ED says testcases ==> data size
+    mixnet_packet* data_packet =  malloc(tot_size);
+
+    //Write data to data packet
+    memcpy(data_packet, recvd_packet, tot_size);
+    
+    //Write Hop path details to data packet
+    mixnet_packet_routing_header* rt_header = data_packet->payload;
+    rt_header->route_length = cnt;
+    rt_header->hop_index = 0;
+
+    mixnet_address* hop_start = (mixnet_address*)(rt_header + 1);
+    hop_list = get_adj_vertex(net_graph, recvd_packet->dst_address)->hop_list;
+    cnt = 0;
+    while (hop_list != NULL){
+        if (hop_list->addr == recvd_packet->dst_address) break;    
+        hop_start[cnt] = hop_list->addr;
+        hop_list = hop_list->next;
+        cnt++;
+  
+    }
+
+    //Write other info to data packet
+    data_packet->src_address = config.node_addr;
+    data_packet->dst_address = recvd_packet->dst_address;
+    data_packet->payload_size = tot_size - (sizeof(mixnet_packet));
+    data_packet->type = PACKET_TYPE_DATA;
+
+    //Consider hop table might be empty. Source route direct to neighbour
+    int err = 0;
+    bool to_neighbour = false;
+    for (size_t i=0; i < config.num_neighbors; i++){
+        if (config.neighbor_addrs[i] == data_packet->dst_address){
+            to_neighbour = true;
+            break;
+        }
+    }
+
+    for (size_t i=0; i < config.num_neighbors; i++){
+        if ((to_neighbour && config.neighbor_addrs[i] == data_packet->dst_address) ||
+            (!to_neighbour && config.neighbor_addrs[i] == hop_start[rt_header->hop_index])){
+            if((err = mixnet_send(handle, i, data_packet)) < 0) {
+                printf("Error sending DATA pkt\n");
+            }
+
+            printf("[%u] Source began send data packet sequence to Node %u \n", 
+                config.node_addr,
+                recvd_packet->dst_address);
+            break;
+        }           
+    }   
+}
+
+void fwd_data_packet(void* handle, const struct mixnet_node_config config, 
+                    mixnet_packet* recvd_packet, graph_t* net_graph){
+
+    mixnet_packet_routing_header* rcvd_header = recvd_packet->payload;
+    size_t tot_size = sizeof(mixnet_packet) +
+                                    sizeof(mixnet_packet_routing_header) +
+                                    (rcvd_header->route_length * sizeof(mixnet_address)) + 
+                                    recvd_packet->payload_size;  //ED says testcases ==> data size
+    mixnet_packet* data_packet = malloc(tot_size);
+    
+    memcpy(data_packet, recvd_packet, tot_size);
+
+    // Increment hop index
+    mixnet_packet_routing_header* rt_header = data_packet->payload;
+    rt_header->hop_index++;
+    
+    int err = 0;
+    mixnet_address* hop_start = (mixnet_address*)(rt_header + 1);
+    for (size_t i=0; i < config.num_neighbors; i++){
+        if (config.neighbor_addrs[i] == hop_start[rt_header->hop_index]){
+            if((err = mixnet_send(handle, i, data_packet)) < 0) {
+                printf("Error sending DATA pkt\n");
+            }
+
+            printf("Node [%u] forwaded data packet meant for %u to next hop \n", 
+                config.node_addr,
+                recvd_packet->dst_address);
+            break;        
+        }
+    }
+}
+
+
 
 void print_stp(const struct mixnet_node_config config, const char *prefix_str, mixnet_packet *packet){
     mixnet_packet_stp *stp_payload = (mixnet_packet_stp*) packet->payload;
@@ -487,12 +615,10 @@ void port_to_neighbor(const struct mixnet_node_config config,
     } 
 }
 
-void get_shortest_paths(const struct mixnet_node_config config, const graph_t *net_graph){
+void get_shortest_paths(const struct mixnet_node_config config, graph_t *net_graph){
     queue_t* routes = queue_init();
     queue_t* tmp_routes = queue_init();
-    queue_t* seen = queue_init();
-    queue_t* computed_paths = queue_init();
-    
+    queue_t* seen = queue_init();    
     
     add_item(seen, config.node_addr);
     // Add first level of BFS tree
@@ -507,12 +633,8 @@ void get_shortest_paths(const struct mixnet_node_config config, const graph_t *n
         add_item(seen, node);
 
         //First time dst is seen in BFS should be shortest path
-        if(!is_in_queue(computed_paths, node)){
-            node_info->hop_list = copy_path(popped_path);  
-          
-            add_item(computed_paths, node);
-        }
-        
+        node_info->hop_list = copy_path(popped_path);  
+           
         bool single_desc = true;
         adj_node_t* neighbours = node_info->adj_list;
         while(neighbours != NULL){
