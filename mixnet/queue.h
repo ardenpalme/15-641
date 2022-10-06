@@ -3,6 +3,7 @@
 
 #include "address.h"
 #include <stdlib.h>
+#include <stdbool.h>
 #include <stdio.h>
 
 
@@ -14,7 +15,7 @@ typedef struct path_ele path_t;
 
 struct queue_ele{
     path_t* path; // Topologically connected routing Path  
-    elem_t* next;
+    struct queue_ele *next;
 };
 typedef struct queue_ele elem_t;
 

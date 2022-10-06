@@ -487,7 +487,7 @@ void send_packet_from_source(void* handle,
     size_t tot_size = sizeof(mixnet_packet) +
                                     sizeof(mixnet_packet_routing_header) +
                                     (cnt * sizeof(mixnet_address)) + 
-                                    recvd_packet->payload_size; //ED says testcases ==> data size
+                                    recvd_packet->payload_size; // ED says testcases ==> data size
     mixnet_packet* data_packet =  malloc(tot_size);
 
     //Write data to data packet
