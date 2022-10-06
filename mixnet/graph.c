@@ -53,7 +53,6 @@ bool graph_add_neighbors(graph_t *net_graph, mixnet_address vert_node, mixnet_ad
             }
         }
     }
-
     return added;
 }
 
@@ -136,6 +135,17 @@ adj_vert_t *find_vertex(graph_t *net_graph, mixnet_address vert_node) {
     }
     return NULL;
 }
+
+void print_adj_list(adj_node_t* adj){
+    adj_node_t* curr = adj;
+    printf("[");
+    while(curr != NULL){
+        printf("%u ", curr->addr);
+        curr = curr->next;
+    }
+    printf("]\n");
+}
+
 
 void print_graph(graph_t *net_graph) {
     adj_vert_t *vert = net_graph->head;
