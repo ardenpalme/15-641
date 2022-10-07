@@ -563,11 +563,11 @@ void fwd_data_packet(void* handle, const struct mixnet_node_config config,
                 printf("Error sending DATA pkt\n");
             }
 
-            printf("Node [%u] forwaded data packet sent from %u meant for %u to next hop %u \n", 
-                config.node_addr,
-                recvd_packet->src_address,
-                recvd_packet->dst_address,
-                config.neighbor_addrs[i]);
+            // printf("Node [%u] forwaded data packet sent from %u meant for %u to next hop %u \n", 
+            //     config.node_addr,
+            //     recvd_packet->src_address,
+            //     recvd_packet->dst_address,
+            //     config.neighbor_addrs[i]);
             break;        
         }
     }
@@ -642,11 +642,14 @@ void get_shortest_paths(const struct mixnet_node_config config, graph_t *net_gra
             // print_queue(routes);
 
             adj_vert_t* node_info = get_adj_vertex(net_graph, node);
-            add_item(seen, node);
-
+            
             //First time dst is seen in BFS should be shortest path
-            node_info->hop_list = copy_path(popped_path); 
-            // printf("Computed route to node %u\n", node);
+            if (!is_in_queue(seen, node)){
+                add_item(seen, node);
+                node_info->hop_list = copy_path(popped_path); 
+                // printf("Computed route to node %u\n", node);
+            }
+
             // print_path(node_info->hop_list); 
             // printf("\n");
             
