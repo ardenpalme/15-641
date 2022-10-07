@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
+#include <time.h>
 
 #include "node.h"
 #include "connection.h"
@@ -20,7 +21,6 @@
 
 #define DEBUG_FLOOD 0
 #define DEBUG_STP 0
-#define PRINT_CONV 0
 
 typedef struct{
     mixnet_address root_address;
@@ -54,6 +54,14 @@ void fwd_lsa(void *handle,
              mixnet_address *neighbor_list,
              mixnet_address source,
              uint16_t neighbors_ct);
+
+mixnet_address *get_random_path(const struct mixnet_node_config config, mixnet_address dst_addr, graph_t *net_graph, uint16_t *rand_path_len);
+uint16_t get_path_to_node(mixnet_address *path_btw_nodes, 
+                          mixnet_address *orig_path, 
+                          uint16_t orig_path_len,
+                          graph_t *net_graph, 
+                          mixnet_address start_node, 
+                          mixnet_address target_node);
 
 // maximum number of nodes in CP2 tests
 const uint16_t max_test_nodes = 20;
@@ -122,6 +130,8 @@ void run_node(void *handle,
     
     graph_t *net_graph = graph_init();
     (void)graph_add_neighbors(net_graph, config.node_addr, config.neighbor_addrs, config.num_neighbors);
+
+    srand(time(0));
     
     // Broadcast (My Root, Path Length, My ID) initially 
     if (is_root(config, &stp_route_db)){
@@ -293,12 +303,12 @@ void run_node(void *handle,
                 } break;
 
                 case PACKET_TYPE_DATA: {
-                    printf("[%u]", config.node_addr);
-                    print_graph(net_graph);
                     // Source route new packet
                     if (recv_port == user_port){
                         // print_routes(net_graph);
                         printf("Entering send packet from source\n");
+                        //printf("[%u]", config.node_addr);
+                        //print_graph(net_graph);
                         send_packet_from_source(handle, config, recvd_packet, net_graph);
 
                     // Packet arrived at destination send to user stack
@@ -480,12 +490,23 @@ void send_packet_from_source(void* handle,
                             graph_t *net_graph){
 
     // Get hop length (initially for malloc purposes)                           
-    path_t* hop_list = get_adj_vertex(net_graph, recvd_packet->dst_address)->hop_list;
     u_int32_t cnt = 0;
-    while (hop_list != NULL){
-        if (hop_list->addr == recvd_packet->dst_address) break;    
-        hop_list = hop_list->next;
-        cnt++;
+    uint16_t rand_path_len;
+    mixnet_address *rand_path;
+
+    path_t* hop_list;
+
+    if(config.use_random_routing) {
+        rand_path = get_random_path(config, recvd_packet->dst_address, net_graph, &rand_path_len);
+        cnt = rand_path_len;
+
+    }else{
+        hop_list = get_adj_vertex(net_graph, recvd_packet->dst_address)->hop_list;
+        while (hop_list != NULL){
+            if (hop_list->addr == recvd_packet->dst_address) break;    
+            hop_list = hop_list->next;
+            cnt++;
+        }
     }
 
     size_t tot_size = sizeof(mixnet_packet) +
@@ -504,16 +525,29 @@ void send_packet_from_source(void* handle,
     char* copy_data = (char*)(((mixnet_address*)(rt_header + 1)) + cnt);
     memcpy(copy_data, orig_data, sizeof(char) * recvd_packet->payload_size);
 
-    mixnet_address* hop_start = (mixnet_address*)(rt_header + 1);
-    hop_list = get_adj_vertex(net_graph, recvd_packet->dst_address)->hop_list;
-    cnt = 0;
-    while (hop_list != NULL){
-        if (hop_list->addr == recvd_packet->dst_address) break;    
-        hop_start[cnt] = hop_list->addr;
-        hop_list = hop_list->next;
-        cnt++;
-  
+    mixnet_address *hop_start = (mixnet_address*)rt_header->route;
+    if(config.use_random_routing) {
+        printf("[%u] random path to %u: [ ", config.node_addr, recvd_packet->dst_address);
+        for(int i=0; i<rand_path_len; i++) {
+            if (rand_path[i] == recvd_packet->dst_address) break;    
+            hop_start[i] = rand_path[i];
+            printf("%u ", rand_path[i]);
+        }
+        printf("]\n");
+        print_graph(net_graph);
+
+    }else{
+        hop_list = get_adj_vertex(net_graph, recvd_packet->dst_address)->hop_list;
+        cnt = 0;
+        while (hop_list != NULL){
+            if (hop_list->addr == recvd_packet->dst_address) break;    
+            hop_start[cnt] = hop_list->addr;
+            hop_list = hop_list->next;
+            cnt++;
+      
+        }
     }
+
 
     //Write other info to data packet
     data_packet->src_address = config.node_addr;
@@ -745,4 +779,110 @@ void print_routes(graph_t* net_graph){
         printf("\n");
         tmp = tmp->next_vert;
     }
+}
+
+bool is_neighbor(const struct mixnet_node_config config, mixnet_address addr) {
+    bool ret = false;
+    for(int i=0; i<config.num_neighbors; i++){
+        if(addr == config.neighbor_addrs[i])
+            ret = true;
+    }
+    return ret;
+}
+
+
+mixnet_address *get_random_path(const struct mixnet_node_config config, mixnet_address dst_addr, graph_t *net_graph, uint16_t *rand_path_len) {
+    // convert all vertices to array
+    mixnet_address net_nodes[max_test_nodes];
+    adj_vert_t *tmp_vert = net_graph->head;
+    uint16_t tmp_idx = 0;
+    while(tmp_vert != NULL) {
+        net_nodes[tmp_idx++] = tmp_vert->addr;
+        tmp_vert = tmp_vert->next_vert;
+    }
+
+    // keep generating random num until it's not a neighbor
+    uint16_t rand_mixnet_addr_idx; 
+    rand_mixnet_addr_idx = rand() % (net_graph->num_vert);
+    while(is_neighbor(config, net_nodes[rand_mixnet_addr_idx]) || 
+          net_nodes[rand_mixnet_addr_idx] == dst_addr ||
+          net_nodes[rand_mixnet_addr_idx] == 14 ||
+          config.node_addr == net_nodes[rand_mixnet_addr_idx]) {
+        rand_mixnet_addr_idx = rand() % (net_graph->num_vert);
+    }
+    mixnet_address rand_mixnet_addr = net_nodes[rand_mixnet_addr_idx];
+    if(!is_vertex(net_graph, rand_mixnet_addr)) {
+        printf("ERROR: Invalid Random Vertex\n");
+        return NULL;
+    }
+
+    uint16_t node_idx = 0, orig_path_len = 0;
+    path_t *bfs_path = get_adj_vertex(net_graph, dst_addr)->hop_list;
+    while(bfs_path != NULL) {
+        orig_path_len++;
+        bfs_path= bfs_path->next;
+    }
+
+    mixnet_address *orig_path= malloc(sizeof(mixnet_address) * orig_path_len);
+    bfs_path = get_adj_vertex(net_graph, dst_addr)->hop_list;
+    tmp_idx = 0;
+    while(bfs_path != NULL) {
+        orig_path[tmp_idx++]= bfs_path->addr;
+        bfs_path= bfs_path->next;
+    }
+
+    mixnet_address *path_btw_nodes= malloc(sizeof(mixnet_address) * (net_graph->num_vert) * 2);
+    uint16_t path_len;
+    path_len = get_path_to_node(path_btw_nodes, orig_path, orig_path_len, net_graph, config.node_addr, rand_mixnet_addr);
+
+    *rand_path_len = path_len;
+    return path_btw_nodes;
+}
+
+int16_t lin_search(mixnet_address *orig_path, uint16_t orig_path_len, mixnet_address node_addr){
+    int16_t idx = 0;
+    while(idx <orig_path_len){
+        if(orig_path[idx] == node_addr){
+            break;
+        }
+        idx++;
+    }
+    return idx;
+}
+
+uint16_t get_path_to_node(mixnet_address *path_btw_nodes, 
+                          mixnet_address *orig_path, 
+                          uint16_t orig_path_len,
+                          graph_t *net_graph, 
+                          mixnet_address start_node, 
+                          mixnet_address target_node)
+{
+    adj_vert_t * tmp_vert = find_vertex(net_graph, target_node);
+    path_t *path_to_node = tmp_vert->hop_list;
+    uint16_t hop_ct = 0;
+
+    while(path_to_node != NULL) {
+        path_btw_nodes[hop_ct] = path_to_node->addr;
+        hop_ct++;
+        path_to_node = path_to_node->next;
+    }
+    
+    // reverse path to get back to start node
+    uint16_t idx = hop_ct;
+    uint16_t path_idx = -1;
+    mixnet_address tmp_node;
+    for(int i=0; i<hop_ct-1; i++) {
+        tmp_node = path_btw_nodes[hop_ct-2-i];
+        path_btw_nodes[idx++] = tmp_node;
+        if((path_idx=lin_search(orig_path, orig_path_len, tmp_node)) > 0){
+            path_idx++;
+            break;
+        }
+    }
+    while(path_idx >= 0 && path_idx < (orig_path_len)){
+            path_btw_nodes[idx++] = orig_path[path_idx++];
+    }
+
+    
+    return idx-1;
 }

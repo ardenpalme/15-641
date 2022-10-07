@@ -10,8 +10,6 @@
 #include "graph.h"
 
 bool adj_list_has_node(graph_t *net_graph, adj_vert_t *adj_vertex, mixnet_address node_addr);
-adj_vert_t *find_vertex(graph_t *net_graph, mixnet_address vert_node);
-
 void print_graph(graph_t *net_graph);
 
 graph_t *graph_init(void) {
@@ -165,4 +163,15 @@ void print_graph(graph_t *net_graph) {
         vert = vert->next_vert; 
     }
     printf("\n");
+}
+
+bool is_vertex(graph_t *net_graph, mixnet_address addr) {
+    adj_vert_t *tmp_vert = net_graph->head;
+    bool ret = false;
+    while(tmp_vert != NULL) {
+        if(tmp_vert->addr == addr)
+            ret = true;
+        tmp_vert = tmp_vert->next_vert;
+    }
+    return ret;
 }

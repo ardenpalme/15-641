@@ -130,5 +130,6 @@ int main(int argc, char **argv) {
     bool success = ((pcap_count == 100) && pcap_check_success
                     && distinct_routes);
 
+    std::cout << pcap_count << std::endl;
     std::cout << (success ? "PASS" : "FAIL") << std::endl;
 }
