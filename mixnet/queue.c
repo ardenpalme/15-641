@@ -1,5 +1,7 @@
 #include "queue.h"
-#include "stdbool.h"
+#include <stdbool.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 
 queue_t* queue_init(){
@@ -24,6 +26,7 @@ bool is_in_queue(queue_t* q, mixnet_address addr){
 
     while(curr != NULL){
         if (curr->path->addr == addr) return true;
+        curr = curr->next;
     }
 
     return false;
@@ -46,6 +49,27 @@ void add_item(queue_t* q, mixnet_address addr){
         }
         curr->next = new;
     }
+}
+
+void print_queue(queue_t* q){
+    elem_t* curr = q->front;
+    printf("[");
+    while(curr != NULL){
+        print_path(curr->path);
+        printf(",");
+        curr = curr->next;
+    }
+    printf("]\n");
+}
+
+void print_path(path_t* p){
+    path_t* curr = p;
+    printf("[");
+    while(curr != NULL){
+        printf("%u ", curr->addr);
+        curr = curr->next;
+    }
+    printf("]");
 }
 
 void add_path(queue_t* q, path_t* path){
@@ -86,7 +110,8 @@ void extend_path(path_t* path, mixnet_address extension){
 }
 
 path_t* copy_path(path_t* path){
-    path_t *tmp, *result;
+    path_t *tmp;
+    path_t *result;
     result = malloc(sizeof(path_t));
     result->addr = path->addr;
     path = path->next;
@@ -95,8 +120,10 @@ path_t* copy_path(path_t* path){
     while (path != NULL){
         tmp->next = malloc(sizeof(path_t));
         tmp->next->addr = path->addr;
-        tmp = tmp->next;        
+        tmp = tmp->next;
+        path = path->next;        
     }
+    tmp->next = NULL;
 
     return result;
 }
