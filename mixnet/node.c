@@ -295,7 +295,7 @@ void run_node(void *handle,
                     // Source route new packet
                     if (recv_port == user_port){
                         // print_routes(net_graph);
-                        // printf("Entering send packet from source\n");
+                        printf("Entering send packet from source\n");
                         send_packet_from_source(handle, config, recvd_packet, net_graph);
 
                     // Packet arrived at destination send to user stack
@@ -491,13 +491,15 @@ void send_packet_from_source(void* handle,
                                     recvd_packet->payload_size; //ED says on testcases payload size == data size
     mixnet_packet* data_packet =  malloc(tot_size);
 
-    //Write data to data packet
-    memcpy(data_packet, recvd_packet, tot_size);
-    
     //Write Hop path details to data packet
     mixnet_packet_routing_header* rt_header = (mixnet_packet_routing_header*)data_packet->payload;
     rt_header->route_length = cnt;
     rt_header->hop_index = 0;
+
+    //Write data to data packet
+    char* orig_data = (char*)(((mixnet_packet_routing_header*)(recvd_packet->payload)) + 1);
+    char* copy_data = (char*)(((mixnet_address*)(rt_header + 1)) + cnt);
+    memcpy(copy_data, orig_data, sizeof(char) * recvd_packet->payload_size);
 
     mixnet_address* hop_start = (mixnet_address*)(rt_header + 1);
     hop_list = get_adj_vertex(net_graph, recvd_packet->dst_address)->hop_list;
@@ -544,6 +546,7 @@ void fwd_data_packet(void* handle, const struct mixnet_node_config config,
                                     recvd_packet->payload_size;  //ED says testcases ==> data size
     mixnet_packet* data_packet = malloc(tot_size);
     
+    //Copy old values while fwding 
     memcpy(data_packet, recvd_packet, tot_size);
 
     // Increment hop index
