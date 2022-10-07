@@ -36,19 +36,28 @@ void pcap(orchestrator* orchestrator,
             mixnet_packet_routing_header*>(packet + 1);
 
         pcap_check_success &= (header->fragment_id == 4);
+        printf("1 check %d\n",pcap_check_success);
+
         int src_idx = get_index(packet->src_address, mixaddrs);
         pcap_check_success &= ((src_idx == 0) || (src_idx == 1));
+        printf("2 check %d\n",pcap_check_success);
+
         pcap_check_success &= (packet->dst_address == mixaddrs[4]);
+        printf("3 check %d\n",pcap_check_success);
 
         pcap_check_success &= (received[src_idx] == 0);
         if (pcap_check_success) { received[src_idx]++; }
+        printf("4 check %d\n",pcap_check_success);
 
         pcap_check_success &= (
             (src_idx == 0) ? check_route(rh, expected_route_0.data(), 2) :
             (src_idx == 1) ? check_route(rh, expected_route_1.data(), 2) :
             false
         );
+        printf("5 check %d\n",pcap_check_success);
+
         pcap_check_success &= check_data(packet, data[src_idx]);
+        printf("6 check %d\n",pcap_check_success);
         pcap_count++;
     }
 }

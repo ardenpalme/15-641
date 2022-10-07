@@ -159,7 +159,9 @@ void print_graph(graph_t *net_graph) {
             node = node->next;
         }
 
-        printf("]\n");
+        printf("];  ");
+        print_path(vert->hop_list);
+        printf("\n");
         vert = vert->next_vert; 
     }
     printf("\n");

@@ -121,6 +121,7 @@ void run_node(void *handle,
     const int user_port = config.num_neighbors;
     
     graph_t *net_graph = graph_init();
+    (void)graph_add_neighbors(net_graph, config.node_addr, config.neighbor_addrs, config.num_neighbors);
     
     // Broadcast (My Root, Path Length, My ID) initially 
     if (is_root(config, &stp_route_db)){
@@ -292,6 +293,8 @@ void run_node(void *handle,
                 } break;
 
                 case PACKET_TYPE_DATA: {
+                    printf("[%u]", config.node_addr);
+                    print_graph(net_graph);
                     // Source route new packet
                     if (recv_port == user_port){
                         // print_routes(net_graph);
@@ -642,10 +645,12 @@ void get_shortest_paths(const struct mixnet_node_config config, graph_t *net_gra
             // print_queue(routes);
 
             adj_vert_t* node_info = get_adj_vertex(net_graph, node);
-            add_item(seen, node);
+            if(!is_in_queue(seen, node)) {
+                add_item(seen, node);
 
-            //First time dst is seen in BFS should be shortest path
-            node_info->hop_list = copy_path(popped_path); 
+                //First time dst is seen in BFS should be shortest path
+                node_info->hop_list = copy_path(popped_path); 
+            }
             // printf("Computed route to node %u\n", node);
             // print_path(node_info->hop_list); 
             // printf("\n");
