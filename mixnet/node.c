@@ -52,7 +52,8 @@ void fwd_lsa(void *handle,
              const struct mixnet_node_config config, 
              uint8_t *active_ports,
              mixnet_address *neighbor_list,
-             uint16_t neighbors_ct);
+             uint16_t neighbors_ct,
+             mixnet_address node_addr);
 
 // maximum number of nodes in CP2 tests
 const uint16_t max_test_nodes = 20;
@@ -102,6 +103,7 @@ void run_node(void *handle,
     activate_all_ports(config, stp_ports); //Initially assume no ST created
 
     bool is_hello_root = true;
+    uint16_t root_hello_ct = 0;
 
     struct timeval root_hello_timer, root_hello_timer_start;
     struct timeval election_timer, election_timer_start;
@@ -109,7 +111,10 @@ void run_node(void *handle,
 
 
     struct timeval convergence_timer_start, convergence_timer;
-                                                  //
+
+    struct timeval lsa_timer_start, lsa_timer;
+    bool broadcasted_lsa = false;
+ 
     mixnet_packet *recvd_packet = NULL;
     mixnet_address stp_parent_addr = -1;
     uint16_t stp_parent_path_length = -1;
@@ -119,7 +124,8 @@ void run_node(void *handle,
     bool printed_convergence= false;
     
     graph_t *net_graph = graph_init();
-    
+    graph_add_neighbors(net_graph, config.node_addr, config.neighbor_addrs, config.num_neighbors);    
+
     // Broadcast (My Root, Path Length, My ID) initially 
     if (is_root(config, &stp_route_db)){
         broadcast_stp(handle, config, &stp_route_db);
@@ -127,6 +133,7 @@ void run_node(void *handle,
     }
 
     gettimeofday(&convergence_timer_start, NULL); // On receiving hello root, reset election timer
+    gettimeofday(&lsa_timer_start, NULL); // timer for when to broadcast LSA
     
 
     while (*keep_running) {
@@ -138,11 +145,19 @@ void run_node(void *handle,
             if ((diff_in_microseconds(root_hello_timer_start, root_hello_timer) >= config.root_hello_interval_ms * 1000)){
                 broadcast_stp(handle, config, &stp_route_db); 
                 gettimeofday(&root_hello_timer_start, NULL); //Reset root hello timer start
+
+                printf("[%u] root hello count: %d\n", config.node_addr, root_hello_ct);
+                if(root_hello_ct == 2){
+                    broadcast_lsa(handle, config, stp_ports);
+                    broadcasted_lsa = true;
+                }else{
+                    root_hello_ct++;
+                }
             } 
-            // Root doesn't know about STP convergence. Choose hello root interval lower bound to have root periodically send LSA 
-            else if ((diff_in_microseconds(root_hello_timer_start, root_hello_timer) >= config.root_hello_interval_ms * 1000 / 3)){
-                broadcast_lsa(handle, config, stp_ports);
-            }
+
+        } else if ((diff_in_microseconds(lsa_timer_start, lsa_timer) >= config.root_hello_interval_ms * 1000 / 3) && !broadcasted_lsa){
+            broadcast_lsa(handle, config, stp_ports);
+            broadcasted_lsa = true;
         }
 
         /*** RECEIVE ***/
@@ -264,8 +279,8 @@ void run_node(void *handle,
                 case PACKET_TYPE_LSA: {
                     mixnet_packet_lsa* recvd_lsa_packet = (mixnet_packet_lsa*) recvd_packet->payload;
                     mixnet_address *neighbor_node_list = (mixnet_address*) ((uint8_t*)&(recvd_packet->payload) + sizeof(mixnet_packet_lsa));
-
                     
+                    /*
                     printf("[%u] node %u has neighbors {", config.node_addr, recvd_lsa_packet->node_address);
                     for(int i=0; i<recvd_lsa_packet->neighbor_count; i++) {
                         printf("%u", neighbor_node_list[i]);
@@ -273,11 +288,11 @@ void run_node(void *handle,
                             printf(", ");
                     }
                     printf("}\n");
-                    
+                    */
 
                     bool updated = graph_add_neighbors(net_graph, recvd_lsa_packet->node_address, 
-                                                        neighbor_node_list, recvd_lsa_packet->neighbor_count);
-                    if (!config.use_random_routing && updated) get_shortest_paths(config, net_graph);
+                                                       neighbor_node_list, recvd_lsa_packet->neighbor_count);
+                    //if (!config.use_random_routing && updated) get_shortest_paths(config, net_graph);
 
                     printf("[%u] Internal Graph:\n", config.node_addr);
                     print_graph(net_graph);
@@ -285,12 +300,14 @@ void run_node(void *handle,
 
                     // Temporarily block receiving port while forwarding to other neighbours
                     stp_ports[recv_port] = 0;
-                    fwd_lsa(handle, config, stp_ports, neighbor_node_list, recvd_lsa_packet->neighbor_count);
+                    fwd_lsa(handle, config, stp_ports, neighbor_node_list, recvd_lsa_packet->neighbor_count, recvd_lsa_packet->node_address);
                     stp_ports[recv_port] = 1;
 
                 } break;
 
                 case PACKET_TYPE_DATA: {
+                    printf("[%u] recvd DATA packet\n", config.node_addr);
+                /*
                     mixnet_packet_routing_header* recvd_data_packet = (mixnet_packet_routing_header*) recvd_packet->payload;
                     // Source route new packet
                     if (recv_port == user_port){
@@ -307,6 +324,7 @@ void run_node(void *handle,
                     } else {
                         fwd_data_packet(handle, config, recvd_packet, net_graph);
                     }
+                */
                 } break;
                 default: break;
             }
@@ -396,9 +414,12 @@ void broadcast_lsa(void *handle,
     mixnet_packet_lsa lsa_payload;
 
     mixnet_address neighbor_list[max_test_nodes];
+    //printf("[%u] Broadcast LSA { ", config.node_addr);
     for (size_t i = 0; i < config.num_neighbors; i++) { 
         neighbor_list[i] = config.neighbor_addrs[i];
+        //printf("%u ", config.neighbor_addrs[i]);
     }
+    //printf("}\n");
 
     for (size_t nid = 0; nid < config.num_neighbors; nid++) {
         if(active_ports[nid]) {
@@ -422,9 +443,11 @@ void broadcast_lsa(void *handle,
                 printf("Error sending LSA pkt\n");
             }
 
-            // printf("[%u] Sent LSA to Node %u\n", 
-            //     config.node_addr,
-            //     config.neighbor_addrs[nid]);
+            /*
+            printf("[%u] Sent LSA to Node %u\n", 
+                config.node_addr,
+                config.neighbor_addrs[nid]);
+            */
         }
     }
 }
@@ -433,7 +456,8 @@ void fwd_lsa(void *handle,
              const struct mixnet_node_config config, 
              uint8_t *active_ports,
              mixnet_address *neighbor_list,
-             uint16_t neighbors_ct)
+             uint16_t neighbors_ct,
+             mixnet_address node_addr)
 {
     int err=0;
     mixnet_packet *lsa_pkt;
@@ -451,8 +475,8 @@ void fwd_lsa(void *handle,
             lsa_pkt->type = PACKET_TYPE_LSA;
             lsa_pkt->payload_size = 4 + (2*neighbors_ct);
 
-            // lsa_payload.node_address = config.node_addr;
             lsa_payload.neighbor_count = neighbors_ct;
+            lsa_payload.node_address = node_addr;
             memcpy(lsa_pkt->payload, &lsa_payload, sizeof(mixnet_packet_lsa));
 
             mixnet_address* neighbours_start = (mixnet_address*)(((mixnet_packet_lsa*)lsa_pkt->payload) + 1);
@@ -463,9 +487,11 @@ void fwd_lsa(void *handle,
                 printf("Error fwd LSA pkt\n");
             }
 
+            /*
             printf("[%u] Fwd LSA to Node %u\n", 
                 config.node_addr,
                 config.neighbor_addrs[nid]);
+            */
         }
     }
 }

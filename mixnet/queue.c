@@ -101,3 +101,19 @@ path_t* copy_path(path_t* path){
     return result;
 }
 
+void print_queue(queue_t *route_queue) {
+    elem_t* ele = route_queue->front;
+    path_t* path;
+    while(ele != NULL){
+        path = ele->path;
+        printf("%u: [ ", path->addr);
+        while(path != NULL){
+            printf("%u ", path->addr);
+            path = path->next;
+        }
+        
+        ele = ele->next;
+        printf("]\n");
+    }
+    printf("\n");
+}
