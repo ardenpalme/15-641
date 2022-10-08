@@ -99,9 +99,24 @@ void print_routes(graph_t* net_graph);
 void fwd_data_packet(void* handle, const struct mixnet_node_config config, 
                     mixnet_packet* recvd_packet, graph_t* net_graph);
 
+//pseudo-random indicies
 static uint16_t prand_indicies[4] = {1, 2, 3, 4};
 static int prand_indicies_idx = 0;
 
+static uint16_t num_recvd_data_pkts=0;
+mixnet_packet *compute_pkt_route_fwd(const struct mixnet_node_config config, 
+                        mixnet_packet* recvd_packet, 
+                        graph_t *net_graph);
+
+mixnet_packet *compute_pkt_route_src (const struct mixnet_node_config config, 
+                                    mixnet_packet* recvd_packet, 
+                                    graph_t *net_graph);
+
+void send_all_buffered_pkt(void *handle, const struct mixnet_node_config config, graph_t *net_graph);
+static mixnet_packet *mixed_fwd_pkts[16];
+static uint16_t mixed_fwd_pkt_idx = 0;
+static mixnet_packet *mixed_src_pkts[16];
+static uint16_t mixed_src_pkt_idx = 0;
 
 void run_node(void *handle,
               volatile bool *keep_running,
@@ -134,11 +149,6 @@ void run_node(void *handle,
     graph_t *net_graph = graph_init();
     (void)graph_add_neighbors(net_graph, config.node_addr, config.neighbor_addrs, config.num_neighbors);
 
-    uint16_t num_recvd_data_pkts=0;
-    mixnet_packet *mixed_fwd_pkts[16];
-    uint16_t mixed_fwd_pkt_idx = 0;
-    mixnet_packet *mixed_src_pkts[16];
-    uint16_t mixed_src_pkt_idx = 0;
     
     // Broadcast (My Root, Path Length, My ID) initially 
     if (is_root(config, &stp_route_db)){
@@ -158,13 +168,13 @@ void run_node(void *handle,
             } 
         }
 
-        if(config.mixing_factor > 1 && num_recvd_data_pkts == config.mixing_factor) {
-            printf("[%u] src_routing %u mixed packets\n"
-                   "     fwd'ing     %u mixed packets\n", config.node_addr, mixed_src_pkt_idx, mixed_fwd_pkt_idx);
 
 
+        if(config.mixing_factor == num_recvd_data_pkts) {
+            send_all_buffered_pkt(handle, config, net_graph);
             num_recvd_data_pkts = 0;
         }
+
 
         /*** RECEIVE ***/
         int value = mixnet_recv(handle, &recv_port, &recvd_packet);
@@ -311,20 +321,14 @@ void run_node(void *handle,
                         //print_graph(net_graph);
                         if(config.mixing_factor == 1) {
                             send_packet_from_source(handle, config, recvd_packet, net_graph);
+
                         }else{
-                            mixed_src_pkts[mixed_src_pkt_idx] = recvd_packet;
-                            printf("1>>%x\n", recvd_packet);
+                            printf("src: [%u] ", num_recvd_data_pkts);
+                            print_packet_header(recvd_packet);
+                            mixnet_packet *pkt = compute_pkt_route_src(config, recvd_packet, net_graph);
+                            mixed_src_pkts[mixed_src_pkt_idx] = pkt;
                             mixed_src_pkt_idx++;
                             num_recvd_data_pkts++;
-
-                            if(config.mixing_factor != 1 && config.mixing_factor == num_recvd_data_pkts) {
-                                int idx=0;
-                                while(idx < mixed_src_pkt_idx){
-                                    printf("2>>%x\n", mixed_src_pkts[idx]);
-                                    send_packet_from_source(handle, config, mixed_src_pkts[idx], net_graph);
-                                    idx++;
-                                }
-                            }
                         }
 
                     // Packet arrived at destination send to user stack
@@ -340,19 +344,12 @@ void run_node(void *handle,
                         if(config.mixing_factor == 1) {
                             fwd_data_packet(handle, config, recvd_packet, net_graph);
                         }else{
-                            mixed_fwd_pkts[mixed_fwd_pkt_idx] = recvd_packet;
-                            printf("3>>%x\n", recvd_packet);
+                            printf("fwd: [%u] ", num_recvd_data_pkts);
+                            print_packet_header(recvd_packet);
+                            mixnet_packet *pkt = compute_pkt_route_fwd(config, recvd_packet, net_graph);
+                            mixed_fwd_pkts[mixed_fwd_pkt_idx] = pkt;
                             mixed_fwd_pkt_idx++;
                             num_recvd_data_pkts++;
-
-                            if(config.mixing_factor != 1 && config.mixing_factor == num_recvd_data_pkts) {
-                                int idx=0;
-                                while(idx < mixed_fwd_pkt_idx){
-                                    printf("4>>%x\n", mixed_fwd_pkts[idx]);
-                                    send_packet_from_source(handle, config, mixed_fwd_pkts[idx], net_graph);
-                                    idx++;
-                                }
-                            }
                         }
                     }
                 } break;
@@ -377,11 +374,138 @@ void run_node(void *handle,
                 gettimeofday(&root_hello_timer_start, NULL); 
 
             }
-
         }
-
     }
 } 
+
+void send_all_buffered_pkt(void *handle, const struct mixnet_node_config config, graph_t *net_graph) {
+    int idx=0;
+    mixnet_packet *pkt;
+    mixnet_packet_routing_header* rt_header;
+    mixnet_address *hop_start;
+    while(idx < mixed_src_pkt_idx){
+        printf("src #%u\n", idx);
+        pkt = (mixnet_packet*)mixed_src_pkts[idx];
+        rt_header = (mixnet_packet_routing_header*)pkt->payload;
+
+        int err = 0;
+        hop_start = (mixnet_address*)rt_header->route;
+
+        for (size_t i=0; i < config.num_neighbors; i++){
+            //Consider hop table might be empty. Source route direct to neighbour
+            if ((rt_header->route_length == 0 && config.neighbor_addrs[i] == pkt->dst_address) ||
+                (rt_header->route_length != 0 && config.neighbor_addrs[i] == hop_start[rt_header->hop_index])){
+                if((err = mixnet_send(handle, i, pkt)) < 0) {
+                    printf("Error sending DATA pkt\n");
+                }
+                break;
+            }           
+        }   
+        idx++;
+    }
+    mixed_src_pkt_idx=0;
+
+    idx=0;
+    while(idx < mixed_fwd_pkt_idx){
+        printf("fwd #%u \n", idx);
+        pkt = (mixnet_packet*)mixed_fwd_pkts[idx];
+        rt_header = (mixnet_packet_routing_header*)pkt->payload;
+
+        int err = 0;
+        hop_start = (mixnet_address*)rt_header->route;
+        
+        for (size_t i=0; i < config.num_neighbors; i++) {
+            //Consider hop table might be empty. Source route direct to neighbour
+            if ((rt_header->route_length == rt_header->hop_index && config.neighbor_addrs[i] == pkt->dst_address) ||
+                (rt_header->route_length > rt_header->hop_index && config.neighbor_addrs[i] == hop_start[rt_header->hop_index])){
+                if((err = mixnet_send(handle, i, pkt)) < 0) {
+                    printf("Error sending DATA pkt\n");
+                }
+                break;        
+            }
+        }
+        idx++;
+    }
+    mixed_fwd_pkt_idx=0;
+}
+
+mixnet_packet *compute_pkt_route_fwd(const struct mixnet_node_config config, 
+                        mixnet_packet* recvd_packet, 
+                        graph_t *net_graph)
+{
+    
+    mixnet_packet_routing_header* rcvd_header = (mixnet_packet_routing_header*)recvd_packet->payload;
+    size_t tot_size = sizeof(mixnet_packet) +
+                      sizeof(mixnet_packet_routing_header) +
+                      (rcvd_header->route_length * sizeof(mixnet_address)) + 
+                      recvd_packet->payload_size;  //ED says testcases ==> data size
+    mixnet_packet* data_packet = malloc(tot_size);
+    
+    //Copy old values while fwding 
+    memcpy(data_packet, recvd_packet, tot_size);
+
+    // Increment hop index
+    mixnet_packet_routing_header* rt_header = (mixnet_packet_routing_header*)data_packet->payload;
+    rt_header->hop_index++;
+    
+    return data_packet;
+}
+
+mixnet_packet *compute_pkt_route_src (const struct mixnet_node_config config, 
+                                    mixnet_packet* recvd_packet, 
+                                    graph_t *net_graph) 
+{
+
+    if(config.use_random_routing) 
+        printf("ERORO using rand rout\n");
+
+    // Get hop length (initially for malloc purposes)                           
+    u_int32_t cnt = 0;
+    path_t* hop_list;
+    hop_list = get_adj_vertex(net_graph, recvd_packet->dst_address)->hop_list;
+    while (hop_list != NULL){
+        if (hop_list->addr == recvd_packet->dst_address) break;    
+        hop_list = hop_list->next;
+        cnt++;
+    }
+
+    size_t tot_size = sizeof(mixnet_packet) +
+                    sizeof(mixnet_packet_routing_header) +
+                    (cnt * sizeof(mixnet_address)) + 
+                    recvd_packet->payload_size; //ED says on testcases payload size == data size
+    mixnet_packet* data_packet =  malloc(tot_size);
+
+    //Write Hop path details to data packet
+    mixnet_packet_routing_header* rt_header = (mixnet_packet_routing_header*)data_packet->payload;
+    rt_header->route_length = cnt;
+    rt_header->hop_index = 0;
+
+    //Write data to data packet
+    char* orig_data = (char*)(((mixnet_packet_routing_header*)(recvd_packet->payload)) + 1);
+    char* copy_data = (char*)(((mixnet_address*)(rt_header + 1)) + cnt);
+    memcpy(copy_data, orig_data, sizeof(char) * recvd_packet->payload_size);
+
+    mixnet_address *hop_start = (mixnet_address*)rt_header->route;
+    hop_list = get_adj_vertex(net_graph, recvd_packet->dst_address)->hop_list;
+    cnt = 0;
+    while (hop_list != NULL){
+        if (hop_list->addr == recvd_packet->dst_address) break;    
+        hop_start[cnt] = hop_list->addr;
+        hop_list = hop_list->next;
+        cnt++;
+    }
+
+    //Write other info to data packet
+    data_packet->src_address = config.node_addr;
+    data_packet->dst_address = recvd_packet->dst_address;
+    data_packet->payload_size = tot_size - (sizeof(mixnet_packet));
+    data_packet->type = PACKET_TYPE_DATA;
+
+    return data_packet;
+}
+
+
+
 
 void broadcast_stp(void *handle, 
                    const struct mixnet_node_config config, 
