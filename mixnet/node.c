@@ -316,9 +316,6 @@ void run_node(void *handle,
                 case PACKET_TYPE_DATA: {
                     // Source route new packet
                     if (recv_port == user_port){
-                        //print_routes(net_graph);
-                        //printf("[%u]", config.node_addr);
-                        //print_graph(net_graph);
                         if(config.mixing_factor == 1) {
                             send_packet_from_source(handle, config, recvd_packet, net_graph);
 
@@ -351,6 +348,23 @@ void run_node(void *handle,
                             mixed_fwd_pkt_idx++;
                             num_recvd_data_pkts++;
                         }
+                    }
+                } break;
+
+                case PACKET_TYPE_PING: {
+                    if (recv_port == user_port){
+                        send_packet_from_source(handle, config, recvd_packet, net_graph);
+
+                    // Packet arrived at destination send to user stack
+                    } else if (recvd_packet->dst_address == config.node_addr){
+                        int err = 0;
+                        if( (err = mixnet_send(handle, user_port, recvd_packet)) < 0){
+                            printf("Error sending FLOOD pkt to user\n");
+                        }
+
+                    // Packet along forwarding route, forward packet
+                    } else {
+                        fwd_data_packet(handle, config, recvd_packet, net_graph);
                     }
                 } break;
 
@@ -399,7 +413,7 @@ void send_all_buffered_pkt(void *handle, const struct mixnet_node_config config,
                     printf("Error sending DATA pkt\n");
                 }
                 break;
-            }           
+            }
         }   
         idx++;
     }
@@ -503,8 +517,6 @@ mixnet_packet *compute_pkt_route_src (const struct mixnet_node_config config,
 
     return data_packet;
 }
-
-
 
 
 void broadcast_stp(void *handle, 
@@ -650,14 +662,6 @@ void send_packet_from_source(void* handle,
     u_int32_t cnt = 0;
     uint16_t rand_path_len;
     mixnet_address *rand_path = get_random_path(config, recvd_packet->dst_address, net_graph, &rand_path_len);
-    #if DEBUG_DATA
-    printf("[%u] Source Route: random path of len %u [ ", config.node_addr, rand_path_len);
-    for(int i=0; i<rand_path_len; i++) {
-        if (rand_path[i] == recvd_packet->dst_address) break;    
-        printf("%u ", rand_path[i]);
-    }
-    printf("]\n");
-    #endif
 
 
     path_t* hop_list;
@@ -692,6 +696,15 @@ void send_packet_from_source(void* handle,
 
     mixnet_address *hop_start = (mixnet_address*)rt_header->route;
     if(config.use_random_routing) {
+
+        printf("[%u] Source Route: random path of len %u [ ", config.node_addr, rand_path_len);
+        for(int i=0; i<rand_path_len; i++) {
+            if (rand_path[i] == recvd_packet->dst_address) break;    
+            printf("%u ", rand_path[i]);
+        }
+        printf("]\n");
+        print_graph(net_graph);
+
         for(int i=0; i<rand_path_len; i++) {
             if (rand_path[i] == recvd_packet->dst_address) break;    
             hop_start[i] = rand_path[i];
@@ -1031,9 +1044,7 @@ mixnet_address *get_random_path(const struct mixnet_node_config config, mixnet_a
         return NULL;
     }
 
-    #if DEBUG_DATA
     printf("[%u] Source Route: random node is %u\n", config.node_addr, rand_mixnet_addr);
-    #endif
 
 
     mixnet_address *path_btw_nodes= malloc(sizeof(mixnet_address) * (net_graph->num_vert) * 2);
