@@ -21,6 +21,7 @@
 
 #define DEBUG_FLOOD 0
 #define DEBUG_STP 0
+#define DEBUG_DATA 0
 
 typedef struct{
     mixnet_address root_address;
@@ -120,7 +121,6 @@ void run_node(void *handle,
     gettimeofday(&election_timer_start, NULL); //Initial reference point
 
 
-                                                  
     mixnet_packet *recvd_packet = NULL;
     mixnet_address stp_parent_addr = -1;
     uint16_t stp_parent_path_length = -1;
@@ -277,23 +277,9 @@ void run_node(void *handle,
                     mixnet_packet_lsa* recvd_lsa_packet = (mixnet_packet_lsa*) recvd_packet->payload;
                     mixnet_address *neighbor_node_list = (mixnet_address*)(recvd_lsa_packet + 1);
 
-                    
-                    // printf("[%u] received LSA from source %u with neighbors {", config.node_addr, recvd_lsa_packet->node_address);
-                    // for(int i=0; i<recvd_lsa_packet->neighbor_count; i++) {
-                    //     printf("%u", neighbor_node_list[i]);
-                    //     if(i < recvd_lsa_packet->neighbor_count -1) 
-                    //         printf(", ");
-                    // }
-                    // printf("}\n");
-                    
-
                     bool updated = graph_add_neighbors(net_graph, recvd_lsa_packet->node_address, 
                                                         neighbor_node_list, recvd_lsa_packet->neighbor_count);
-                    // printf("Had an LSA update res %d,  Node %u's Internal Graph:\n", updated, config.node_addr);
-                    // print_graph(net_graph);
-                    // printf("====================\n");
                     if (updated) get_shortest_paths(config, net_graph);
-
 
                     // Temporarily block receiving port while forwarding to other neighbours
                     stp_ports[recv_port] = 0;
@@ -305,8 +291,7 @@ void run_node(void *handle,
                 case PACKET_TYPE_DATA: {
                     // Source route new packet
                     if (recv_port == user_port){
-                        // print_routes(net_graph);
-                        printf("Entering send packet from source\n");
+                        //print_routes(net_graph);
                         //printf("[%u]", config.node_addr);
                         //print_graph(net_graph);
                         send_packet_from_source(handle, config, recvd_packet, net_graph);
@@ -320,10 +305,11 @@ void run_node(void *handle,
 
                     // Packet along forwarding route, forward packet
                     } else {
-                        // printf("Entering fwding data packet\n");
+                        //printf("Entering fwding data packet\n");
                         fwd_data_packet(handle, config, recvd_packet, net_graph);
                     }
                 } break;
+
                 default: break;
             }
         } else {
@@ -487,17 +473,27 @@ void fwd_lsa(void *handle,
 void send_packet_from_source(void* handle,
                             const struct mixnet_node_config config,
                             mixnet_packet* recvd_packet,
-                            graph_t *net_graph){
+                            graph_t *net_graph) {
 
     // Get hop length (initially for malloc purposes)                           
     u_int32_t cnt = 0;
     uint16_t rand_path_len;
-    mixnet_address *rand_path;
+    mixnet_address *rand_path = get_random_path(config, recvd_packet->dst_address, net_graph, &rand_path_len);
+    #if DEBUG_DATA
+    printf("[%u] Source Route:\n", config.node_addr);
+    print_graph(net_graph);
+    printf("[%u] Source Route: random path of len %u [ ", config.node_addr, rand_path_len);
+    for(int i=0; i<rand_path_len; i++) {
+        if (rand_path[i] == recvd_packet->dst_address) break;    
+        printf("%u ", rand_path[i]);
+    }
+    printf("]\n");
+    #endif
+
 
     path_t* hop_list;
 
     if(config.use_random_routing) {
-        rand_path = get_random_path(config, recvd_packet->dst_address, net_graph, &rand_path_len);
         cnt = rand_path_len;
 
     }else{
@@ -510,9 +506,9 @@ void send_packet_from_source(void* handle,
     }
 
     size_t tot_size = sizeof(mixnet_packet) +
-                                    sizeof(mixnet_packet_routing_header) +
-                                    (cnt * sizeof(mixnet_address)) + 
-                                    recvd_packet->payload_size; //ED says on testcases payload size == data size
+                    sizeof(mixnet_packet_routing_header) +
+                    (cnt * sizeof(mixnet_address)) + 
+                    recvd_packet->payload_size; //ED says on testcases payload size == data size
     mixnet_packet* data_packet =  malloc(tot_size);
 
     //Write Hop path details to data packet
@@ -527,14 +523,10 @@ void send_packet_from_source(void* handle,
 
     mixnet_address *hop_start = (mixnet_address*)rt_header->route;
     if(config.use_random_routing) {
-        printf("[%u] random path to %u: [ ", config.node_addr, recvd_packet->dst_address);
         for(int i=0; i<rand_path_len; i++) {
             if (rand_path[i] == recvd_packet->dst_address) break;    
             hop_start[i] = rand_path[i];
-            printf("%u ", rand_path[i]);
         }
-        printf("]\n");
-        print_graph(net_graph);
 
     }else{
         hop_list = get_adj_vertex(net_graph, recvd_packet->dst_address)->hop_list;
@@ -544,10 +536,8 @@ void send_packet_from_source(void* handle,
             hop_start[cnt] = hop_list->addr;
             hop_list = hop_list->next;
             cnt++;
-      
         }
     }
-
 
     //Write other info to data packet
     data_packet->src_address = config.node_addr;
@@ -564,10 +554,13 @@ void send_packet_from_source(void* handle,
                 printf("Error sending DATA pkt\n");
             }
 
-            printf("[%u] Source began send data packet sequence to Node %u via  hop %u\n", 
+            #if DEBUG_DATA
+            printf("[%u] Source began send data packet sequence to Node %u via hop %u\n", 
                 config.node_addr,
                 recvd_packet->dst_address,
                 config.neighbor_addrs[i]);
+            #endif
+
             break;
         }           
     }   
@@ -578,9 +571,9 @@ void fwd_data_packet(void* handle, const struct mixnet_node_config config,
 
     mixnet_packet_routing_header* rcvd_header = (mixnet_packet_routing_header*)recvd_packet->payload;
     size_t tot_size = sizeof(mixnet_packet) +
-                                    sizeof(mixnet_packet_routing_header) +
-                                    (rcvd_header->route_length * sizeof(mixnet_address)) + 
-                                    recvd_packet->payload_size;  //ED says testcases ==> data size
+                      sizeof(mixnet_packet_routing_header) +
+                      (rcvd_header->route_length * sizeof(mixnet_address)) + 
+                      recvd_packet->payload_size;  //ED says testcases ==> data size
     mixnet_packet* data_packet = malloc(tot_size);
     
     //Copy old values while fwding 
@@ -589,6 +582,18 @@ void fwd_data_packet(void* handle, const struct mixnet_node_config config,
     // Increment hop index
     mixnet_packet_routing_header* rt_header = (mixnet_packet_routing_header*)data_packet->payload;
     rt_header->hop_index++;
+    
+    //print route left
+    mixnet_address *tmp_route = (mixnet_address*)rt_header->route;
+    uint16_t tmp_idx=rt_header->hop_index;
+    #if DEBUG_DATA
+    printf("[%u] DATA packet route len %u: [ ", config.node_addr, rt_header->route_length);
+    while(tmp_idx < rt_header->route_length) {
+        printf("%u ", tmp_route[tmp_idx]);
+        tmp_idx++;
+    }
+    printf("]\n");
+    #endif
     
     int err = 0;
     mixnet_address* hop_start = (mixnet_address*)(rt_header + 1);
@@ -600,11 +605,13 @@ void fwd_data_packet(void* handle, const struct mixnet_node_config config,
                 printf("Error sending DATA pkt\n");
             }
 
+            #if DEBUG_DATA
             printf("Node [%u] forwaded data packet sent from %u meant for %u to next hop %u \n", 
                 config.node_addr,
                 recvd_packet->src_address,
                 recvd_packet->dst_address,
                 config.neighbor_addrs[i]);
+            #endif
             break;        
         }
     }
@@ -702,11 +709,11 @@ void get_shortest_paths(const struct mixnet_node_config config, graph_t *net_gra
                 //Using information of preceeding hop, extend path of route          
                 // Create new unique route if parent node splits into multiple children
                 path_t* branch_off;
-                if (!single_desc){
-                    branch_off = copy_path(popped_path);
-                }else{
+                if(single_desc && node_info->num_children == 2) {
                     single_desc = false;
                     branch_off = popped_path;
+                } else{
+                    branch_off = copy_path(popped_path);
                 }
 
                 extend_path(branch_off, neighbours->addr);
@@ -806,7 +813,7 @@ mixnet_address *get_random_path(const struct mixnet_node_config config, mixnet_a
     rand_mixnet_addr_idx = rand() % (net_graph->num_vert);
     while(is_neighbor(config, net_nodes[rand_mixnet_addr_idx]) || 
           net_nodes[rand_mixnet_addr_idx] == dst_addr ||
-          net_nodes[rand_mixnet_addr_idx] == 14 ||
+          net_nodes[rand_mixnet_addr_idx] == 14 ||                  // TODO remove hardcoded value
           config.node_addr == net_nodes[rand_mixnet_addr_idx]) {
         rand_mixnet_addr_idx = rand() % (net_graph->num_vert);
     }
@@ -815,6 +822,10 @@ mixnet_address *get_random_path(const struct mixnet_node_config config, mixnet_a
         printf("ERROR: Invalid Random Vertex\n");
         return NULL;
     }
+
+    #if DEBUG_DATA
+    //printf("[%u] Source Route: random node is %u\n", config.node_addr, rand_mixnet_addr);
+    #endif
 
     uint16_t node_idx = 0, orig_path_len = 0;
     path_t *bfs_path = get_adj_vertex(net_graph, dst_addr)->hop_list;

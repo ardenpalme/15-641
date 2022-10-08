@@ -14,6 +14,7 @@ typedef struct adjacency_node adj_node_t;
 struct adjacency_vert {
     mixnet_address addr;
     adj_node_t *adj_list; // Node's list of neighbours
+    uint16_t num_children;
     path_t *hop_list; //Path to get to node
     struct adjacency_vert *next_vert;
 };
