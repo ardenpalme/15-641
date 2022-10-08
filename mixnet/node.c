@@ -480,8 +480,6 @@ void send_packet_from_source(void* handle,
     uint16_t rand_path_len;
     mixnet_address *rand_path = get_random_path(config, recvd_packet->dst_address, net_graph, &rand_path_len);
     #if DEBUG_DATA
-    printf("[%u] Source Route:\n", config.node_addr);
-    print_graph(net_graph);
     printf("[%u] Source Route: random path of len %u [ ", config.node_addr, rand_path_len);
     for(int i=0; i<rand_path_len; i++) {
         if (rand_path[i] == recvd_packet->dst_address) break;    
@@ -584,9 +582,9 @@ void fwd_data_packet(void* handle, const struct mixnet_node_config config,
     rt_header->hop_index++;
     
     //print route left
+    #if DEBUG_DATA
     mixnet_address *tmp_route = (mixnet_address*)rt_header->route;
     uint16_t tmp_idx=rt_header->hop_index;
-    #if DEBUG_DATA
     printf("[%u] DATA packet route len %u: [ ", config.node_addr, rt_header->route_length);
     while(tmp_idx < rt_header->route_length) {
         printf("%u ", tmp_route[tmp_idx]);
@@ -824,7 +822,7 @@ mixnet_address *get_random_path(const struct mixnet_node_config config, mixnet_a
     }
 
     #if DEBUG_DATA
-    //printf("[%u] Source Route: random node is %u\n", config.node_addr, rand_mixnet_addr);
+    printf("[%u] Source Route: random node is %u\n", config.node_addr, rand_mixnet_addr);
     #endif
 
     uint16_t node_idx = 0, orig_path_len = 0;
@@ -882,18 +880,21 @@ uint16_t get_path_to_node(mixnet_address *path_btw_nodes,
     uint16_t idx = hop_ct;
     uint16_t path_idx = -1;
     mixnet_address tmp_node;
-    for(int i=0; i<hop_ct-1; i++) {
-        tmp_node = path_btw_nodes[hop_ct-2-i];
-        path_btw_nodes[idx++] = tmp_node;
-        if((path_idx=lin_search(orig_path, orig_path_len, tmp_node)) > 0){
-            path_idx++;
+    for(int i=0; i<hop_ct; i++) {
+        tmp_node = path_btw_nodes[i];
+        if((path_idx=lin_search(orig_path, orig_path_len, tmp_node)) != -1)
             break;
+        
+        path_btw_nodes[idx] = tmp_node;
+        idx++;
+    }
+    if(path_idx != -1) {
+        while(path_idx < orig_path_len) {
+            path_btw_nodes[idx] = orig_path[path_idx];
+            idx++;
+            path_idx++;
         }
     }
-    while(path_idx >= 0 && path_idx < (orig_path_len)){
-            path_btw_nodes[idx++] = orig_path[path_idx++];
-    }
-
     
-    return idx-1;
+    return idx - 1;
 }
