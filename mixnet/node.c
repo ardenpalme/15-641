@@ -134,6 +134,11 @@ void run_node(void *handle,
     graph_t *net_graph = graph_init();
     (void)graph_add_neighbors(net_graph, config.node_addr, config.neighbor_addrs, config.num_neighbors);
 
+    uint16_t num_recvd_data_pkts=0;
+    mixnet_packet *mixed_fwd_pkts[16];
+    uint16_t mixed_fwd_pkt_idx = 0;
+    mixnet_packet *mixed_src_pkts[16];
+    uint16_t mixed_src_pkt_idx = 0;
     
     // Broadcast (My Root, Path Length, My ID) initially 
     if (is_root(config, &stp_route_db)){
@@ -151,6 +156,14 @@ void run_node(void *handle,
                 broadcast_stp(handle, config, &stp_route_db); 
                 gettimeofday(&root_hello_timer_start, NULL); //Reset root hello timer start
             } 
+        }
+
+        if(config.mixing_factor > 1 && num_recvd_data_pkts == config.mixing_factor) {
+            printf("[%u] src_routing %u mixed packets\n"
+                   "     fwd'ing     %u mixed packets\n", config.node_addr, mixed_src_pkt_idx, mixed_fwd_pkt_idx);
+
+
+            num_recvd_data_pkts = 0;
         }
 
         /*** RECEIVE ***/
@@ -296,7 +309,23 @@ void run_node(void *handle,
                         //print_routes(net_graph);
                         //printf("[%u]", config.node_addr);
                         //print_graph(net_graph);
-                        send_packet_from_source(handle, config, recvd_packet, net_graph);
+                        if(config.mixing_factor == 1) {
+                            send_packet_from_source(handle, config, recvd_packet, net_graph);
+                        }else{
+                            mixed_src_pkts[mixed_src_pkt_idx] = recvd_packet;
+                            printf("1>>%x\n", recvd_packet);
+                            mixed_src_pkt_idx++;
+                            num_recvd_data_pkts++;
+
+                            if(config.mixing_factor != 1 && config.mixing_factor == num_recvd_data_pkts) {
+                                int idx=0;
+                                while(idx < mixed_src_pkt_idx){
+                                    printf("2>>%x\n", mixed_src_pkts[idx]);
+                                    send_packet_from_source(handle, config, mixed_src_pkts[idx], net_graph);
+                                    idx++;
+                                }
+                            }
+                        }
 
                     // Packet arrived at destination send to user stack
                     } else if (recvd_packet->dst_address == config.node_addr){
@@ -308,7 +337,23 @@ void run_node(void *handle,
                     // Packet along forwarding route, forward packet
                     } else {
                         //printf("Entering fwding data packet\n");
-                        fwd_data_packet(handle, config, recvd_packet, net_graph);
+                        if(config.mixing_factor == 1) {
+                            fwd_data_packet(handle, config, recvd_packet, net_graph);
+                        }else{
+                            mixed_fwd_pkts[mixed_fwd_pkt_idx] = recvd_packet;
+                            printf("3>>%x\n", recvd_packet);
+                            mixed_fwd_pkt_idx++;
+                            num_recvd_data_pkts++;
+
+                            if(config.mixing_factor != 1 && config.mixing_factor == num_recvd_data_pkts) {
+                                int idx=0;
+                                while(idx < mixed_fwd_pkt_idx){
+                                    printf("4>>%x\n", mixed_fwd_pkts[idx]);
+                                    send_packet_from_source(handle, config, mixed_fwd_pkts[idx], net_graph);
+                                    idx++;
+                                }
+                            }
+                        }
                     }
                 } break;
 
