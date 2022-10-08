@@ -21,7 +21,7 @@
 
 #define DEBUG_FLOOD 0
 #define DEBUG_STP 0
-#define DEBUG_DATA 0
+#define DEBUG_DATA 1
 
 typedef struct{
     mixnet_address root_address;
@@ -795,6 +795,16 @@ bool is_neighbor(const struct mixnet_node_config config, mixnet_address addr) {
     return ret;
 }
 
+int16_t lin_search(mixnet_address *orig_path, uint16_t orig_path_len, mixnet_address node_addr){
+    int16_t idx = 0;
+    while(idx <orig_path_len){
+        if(orig_path[idx] == node_addr){
+            break;
+        }
+        idx++;
+    }
+    return idx;
+}
 
 mixnet_address *get_random_path(const struct mixnet_node_config config, mixnet_address dst_addr, graph_t *net_graph, uint16_t *rand_path_len) {
     // convert all vertices to array
@@ -811,9 +821,9 @@ mixnet_address *get_random_path(const struct mixnet_node_config config, mixnet_a
     rand_mixnet_addr_idx = rand() % (net_graph->num_vert);
     while(is_neighbor(config, net_nodes[rand_mixnet_addr_idx]) || 
           net_nodes[rand_mixnet_addr_idx] == dst_addr ||
-          net_nodes[rand_mixnet_addr_idx] == 14 ||                  // TODO remove hardcoded value
+          //(lin_search(orig_path, orig_path_len, net_nodes[rand_mixnet_addr_idx]) >= 0) ||
           config.node_addr == net_nodes[rand_mixnet_addr_idx]) {
-        rand_mixnet_addr_idx = rand() % (net_graph->num_vert);
+        rand_mixnet_addr_idx = (rand_mixnet_addr_idx + 1) % (net_graph->num_vert);
     }
     mixnet_address rand_mixnet_addr = net_nodes[rand_mixnet_addr_idx];
     if(!is_vertex(net_graph, rand_mixnet_addr)) {
@@ -825,7 +835,7 @@ mixnet_address *get_random_path(const struct mixnet_node_config config, mixnet_a
     printf("[%u] Source Route: random node is %u\n", config.node_addr, rand_mixnet_addr);
     #endif
 
-    uint16_t node_idx = 0, orig_path_len = 0;
+    uint16_t orig_path_len = 0;
     path_t *bfs_path = get_adj_vertex(net_graph, dst_addr)->hop_list;
     while(bfs_path != NULL) {
         orig_path_len++;
@@ -840,6 +850,7 @@ mixnet_address *get_random_path(const struct mixnet_node_config config, mixnet_a
         bfs_path= bfs_path->next;
     }
 
+
     mixnet_address *path_btw_nodes= malloc(sizeof(mixnet_address) * (net_graph->num_vert) * 2);
     uint16_t path_len;
     path_len = get_path_to_node(path_btw_nodes, orig_path, orig_path_len, net_graph, config.node_addr, rand_mixnet_addr);
@@ -848,16 +859,6 @@ mixnet_address *get_random_path(const struct mixnet_node_config config, mixnet_a
     return path_btw_nodes;
 }
 
-int16_t lin_search(mixnet_address *orig_path, uint16_t orig_path_len, mixnet_address node_addr){
-    int16_t idx = 0;
-    while(idx <orig_path_len){
-        if(orig_path[idx] == node_addr){
-            break;
-        }
-        idx++;
-    }
-    return idx;
-}
 
 uint16_t get_path_to_node(mixnet_address *path_btw_nodes, 
                           mixnet_address *orig_path, 
