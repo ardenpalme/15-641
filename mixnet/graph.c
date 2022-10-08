@@ -9,9 +9,6 @@
 #include "address.h"
 #include "graph.h"
 
-bool adj_list_has_node(graph_t *net_graph, adj_vert_t *adj_vertex, mixnet_address node_addr);
-void print_graph(graph_t *net_graph);
-
 graph_t *graph_init(void) {
     graph_t *graph = malloc(sizeof(graph_t));
     graph->head = NULL;
@@ -28,7 +25,7 @@ bool graph_add_neighbors(graph_t *net_graph, mixnet_address vert_node, mixnet_ad
     bool added = false;
 
     for(uint16_t node_idx=0; node_idx < node_count; node_idx++){
-        node_in_graph = adj_list_has_node(net_graph, adj_vertex, node_list[node_idx]);
+        node_in_graph = adj_list_has_node(adj_vertex, node_list[node_idx]);
         
         if(!node_in_graph) {
             adj_vertex->num_children += 1;
@@ -55,7 +52,7 @@ bool graph_add_neighbors(graph_t *net_graph, mixnet_address vert_node, mixnet_ad
     return added;
 }
 
-bool adj_list_has_node(graph_t *net_graph, adj_vert_t *adj_vertex, mixnet_address node_addr) {
+bool adj_list_has_node(adj_vert_t *adj_vertex, mixnet_address node_addr) {
     adj_node_t *search_node;
     search_node = adj_vertex->adj_list;
     bool found_node = false;

@@ -28,6 +28,7 @@ typedef struct {
 
 graph_t *graph_init(void);
 adj_vert_t *get_adj_vertex(graph_t *net_graph, mixnet_address vert_node);
+bool adj_list_has_node(adj_vert_t *adj_vertex, mixnet_address node_addr);
 adj_vert_t *find_vertex(graph_t *net_graph, mixnet_address vert_node);
 bool is_vertex(graph_t *net_graph, mixnet_address addr);
 bool graph_add_neighbors(graph_t *net_graph, mixnet_address vert_node, mixnet_address *node_list, uint16_t node_count);

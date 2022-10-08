@@ -21,7 +21,7 @@
 
 #define DEBUG_FLOOD 0
 #define DEBUG_STP 0
-#define DEBUG_DATA 1
+#define DEBUG_DATA 0
 
 typedef struct{
     mixnet_address root_address;
@@ -62,6 +62,7 @@ uint16_t get_path_to_node(mixnet_address *path_btw_nodes,
                           uint16_t orig_path_len,
                           graph_t *net_graph, 
                           mixnet_address start_node, 
+                          mixnet_address dst_node, 
                           mixnet_address target_node);
 
 // maximum number of nodes in CP2 tests
@@ -98,6 +99,8 @@ void print_routes(graph_t* net_graph);
 void fwd_data_packet(void* handle, const struct mixnet_node_config config, 
                     mixnet_packet* recvd_packet, graph_t* net_graph);
 
+static uint16_t prand_indicies[4] = {1, 2, 3, 4};
+static int prand_indicies_idx = 0;
 
 
 void run_node(void *handle,
@@ -131,7 +134,6 @@ void run_node(void *handle,
     graph_t *net_graph = graph_init();
     (void)graph_add_neighbors(net_graph, config.node_addr, config.neighbor_addrs, config.num_neighbors);
 
-    srand(time(0));
     
     // Broadcast (My Root, Path Length, My ID) initially 
     if (is_root(config, &stp_route_db)){
@@ -595,6 +597,18 @@ void fwd_data_packet(void* handle, const struct mixnet_node_config config,
     
     int err = 0;
     mixnet_address* hop_start = (mixnet_address*)(rt_header + 1);
+    /*
+    if(config.use_random_routing) {
+        for (size_t i=0; i < config.num_neighbors; i++){
+            if (config.neighbor_addrs[i] == data_packet->dst_address){
+                rt_header->hop_index = rt_header->route_length;
+                if((err = mixnet_send(handle, i, data_packet)) < 0) {
+                    printf("Error sending DATA pkt\n");
+                }
+            }
+        }
+    }else{
+    */
     for (size_t i=0; i < config.num_neighbors; i++){
         //Consider hop table might be empty. Source route direct to neighbour
         if ((rt_header->route_length == rt_header->hop_index && config.neighbor_addrs[i] == data_packet->dst_address) ||
@@ -796,14 +810,16 @@ bool is_neighbor(const struct mixnet_node_config config, mixnet_address addr) {
 }
 
 int16_t lin_search(mixnet_address *orig_path, uint16_t orig_path_len, mixnet_address node_addr){
+    int16_t ret = -1;
     int16_t idx = 0;
     while(idx <orig_path_len){
         if(orig_path[idx] == node_addr){
+            ret = idx;
             break;
         }
         idx++;
     }
-    return idx;
+    return ret;
 }
 
 mixnet_address *get_random_path(const struct mixnet_node_config config, mixnet_address dst_addr, graph_t *net_graph, uint16_t *rand_path_len) {
@@ -815,25 +831,6 @@ mixnet_address *get_random_path(const struct mixnet_node_config config, mixnet_a
         net_nodes[tmp_idx++] = tmp_vert->addr;
         tmp_vert = tmp_vert->next_vert;
     }
-
-    // keep generating random num until it's not a neighbor
-    uint16_t rand_mixnet_addr_idx; 
-    rand_mixnet_addr_idx = rand() % (net_graph->num_vert);
-    while(is_neighbor(config, net_nodes[rand_mixnet_addr_idx]) || 
-          net_nodes[rand_mixnet_addr_idx] == dst_addr ||
-          //(lin_search(orig_path, orig_path_len, net_nodes[rand_mixnet_addr_idx]) >= 0) ||
-          config.node_addr == net_nodes[rand_mixnet_addr_idx]) {
-        rand_mixnet_addr_idx = (rand_mixnet_addr_idx + 1) % (net_graph->num_vert);
-    }
-    mixnet_address rand_mixnet_addr = net_nodes[rand_mixnet_addr_idx];
-    if(!is_vertex(net_graph, rand_mixnet_addr)) {
-        printf("ERROR: Invalid Random Vertex\n");
-        return NULL;
-    }
-
-    #if DEBUG_DATA
-    printf("[%u] Source Route: random node is %u\n", config.node_addr, rand_mixnet_addr);
-    #endif
 
     uint16_t orig_path_len = 0;
     path_t *bfs_path = get_adj_vertex(net_graph, dst_addr)->hop_list;
@@ -850,10 +847,29 @@ mixnet_address *get_random_path(const struct mixnet_node_config config, mixnet_a
         bfs_path= bfs_path->next;
     }
 
+    // keep generating random num until it's not a neighbor
+    uint16_t rand_mixnet_addr_idx; 
+    rand_mixnet_addr_idx = prand_indicies[prand_indicies_idx++] % (net_graph->num_vert);
+    while(is_neighbor(config, net_nodes[rand_mixnet_addr_idx]) || 
+          net_nodes[rand_mixnet_addr_idx] == dst_addr ||
+          //(lin_search(orig_path, orig_path_len, net_nodes[rand_mixnet_addr_idx]) >= 0) ||
+          config.node_addr == net_nodes[rand_mixnet_addr_idx]) {
+        rand_mixnet_addr_idx = (rand_mixnet_addr_idx + 1) % (net_graph->num_vert);
+    }
+    mixnet_address rand_mixnet_addr = net_nodes[rand_mixnet_addr_idx];
+    if(!is_vertex(net_graph, rand_mixnet_addr)) {
+        printf("ERROR: Invalid Random Vertex\n");
+        return NULL;
+    }
+
+    #if DEBUG_DATA
+    printf("[%u] Source Route: random node is %u\n", config.node_addr, rand_mixnet_addr);
+    #endif
+
 
     mixnet_address *path_btw_nodes= malloc(sizeof(mixnet_address) * (net_graph->num_vert) * 2);
     uint16_t path_len;
-    path_len = get_path_to_node(path_btw_nodes, orig_path, orig_path_len, net_graph, config.node_addr, rand_mixnet_addr);
+    path_len = get_path_to_node(path_btw_nodes, orig_path, orig_path_len, net_graph, config.node_addr, dst_addr, rand_mixnet_addr);
 
     *rand_path_len = path_len;
     return path_btw_nodes;
@@ -865,6 +881,7 @@ uint16_t get_path_to_node(mixnet_address *path_btw_nodes,
                           uint16_t orig_path_len,
                           graph_t *net_graph, 
                           mixnet_address start_node, 
+                          mixnet_address dst_node, 
                           mixnet_address target_node)
 {
     adj_vert_t * tmp_vert = find_vertex(net_graph, target_node);
@@ -875,6 +892,11 @@ uint16_t get_path_to_node(mixnet_address *path_btw_nodes,
         path_btw_nodes[hop_ct] = path_to_node->addr;
         hop_ct++;
         path_to_node = path_to_node->next;
+    }
+
+    if(adj_list_has_node(tmp_vert, dst_node)) {
+        path_btw_nodes[hop_ct] = dst_node;
+        return hop_ct;
     }
     
     // reverse path to get back to start node
