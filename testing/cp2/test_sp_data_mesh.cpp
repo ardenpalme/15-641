@@ -107,5 +107,6 @@ int main(int argc, char **argv) {
         "Nodes returned OK" : "Nodes returned error") << std::endl;
 
     bool success = ((pcap_count == 10) && pcap_check_success);
+    std::cout << pcap_count << std::endl;
     std::cout << (success ? "PASS" : "FAIL") << std::endl;
 }
