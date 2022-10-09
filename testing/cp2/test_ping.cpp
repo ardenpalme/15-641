@@ -70,7 +70,7 @@ void testcase(orchestrator* orchestrator) {
         DIE_ON_ERROR(orchestrator->pcap_change_subscription(i, true));
     }
     // Send a PING packet
-    DIE_ON_ERROR(orchestrator->send_packet(0, 7, PACKET_TYPE_PING));
+    DIE_ON_ERROR(orchestrator->send_packet(0, 1, PACKET_TYPE_PING));
     sleep(5); // Wait for packets to propagate
 }
 
