@@ -22,6 +22,55 @@ graph_t *graph_init(void) {
     return graph;
 }
 
+bool is_vertex(graph_t *net_graph, mixnet_address addr) {
+    adj_vert_t *tmp_vert = net_graph->head;
+    bool ret = false;
+    while(tmp_vert != NULL) {
+        if(tmp_vert->addr == addr)
+            ret = true;
+        tmp_vert = tmp_vert->next_vert;
+    }
+    return ret;
+}
+
+void verify_graph(graph_t *net_graph){
+    adj_vert_t *adj_vertex =  net_graph->head;
+    adj_vert_t *tmp_vert;
+    adj_node_t *search_node, *node;
+
+    while(adj_vertex != NULL){
+        adj_node_t *tmp_node = adj_vertex->adj_list;
+        while(tmp_node != NULL){
+            if(is_vertex(net_graph, tmp_node->addr)){
+                tmp_vert = get_adj_vertex(net_graph, tmp_node->addr);
+
+                if(!adj_list_has_node(net_graph, tmp_vert, adj_vertex->addr)) {
+                    node = malloc(sizeof(adj_node_t));
+                    node->addr = adj_vertex->addr;
+                    node->next = NULL;
+                    tmp_vert->num_children += 1;
+                    
+                    //append
+                    if(tmp_vert->adj_list == NULL){
+                        tmp_vert->adj_list = node;
+                    }else{
+                        search_node = tmp_vert->adj_list;
+                        while(search_node->next != NULL){
+                            search_node = search_node->next;
+                        }
+                        search_node->next = node;
+                    }
+                    //printf("MISSING %u from vert %u\n",adj_vertex->addr, tmp_vert->addr );
+                }
+            }
+            tmp_node = tmp_node->next;
+        }
+
+        adj_vertex = adj_vertex->next_vert;
+    }
+
+}
+
 bool graph_add_neighbors(graph_t *net_graph, mixnet_address vert_node, mixnet_address *node_list, uint16_t node_count) {
     adj_vert_t *adj_vertex = get_adj_vertex(net_graph, vert_node);
     adj_node_t *node;
