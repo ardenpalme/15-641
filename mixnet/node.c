@@ -103,6 +103,22 @@ uint16_t get_path_to_node(mixnet_address *path_btw_nodes,
                           mixnet_address dst_node, 
                           mixnet_address target_node);
                           
+void send_ping_packet_from_source(void* handle,
+                            const struct mixnet_node_config config,
+                            mixnet_packet* recvd_packet,
+                            graph_t *net_graph,
+                            struct timeval *t0);
+
+void send_ping_response(void* handle,
+                        const struct mixnet_node_config config,
+                        mixnet_packet* recvd_packet,
+                        graph_t *net_graph);
+
+void fwd_ping_packet(void* handle, const struct mixnet_node_config config, 
+                    mixnet_packet* recvd_packet, graph_t* net_graph); 
+
+
+
 void run_node(void *handle,
               volatile bool *keep_running,
               const struct mixnet_node_config config) {
@@ -385,8 +401,62 @@ void run_node(void *handle,
                             fwd_data_packet(handle, config, recvd_packet, net_graph);
                         }
                     }
-
                 } break;
+
+                case PACKET_TYPE_PING: {
+                    struct timeval send_time;
+                    struct timeval curr_time;
+                    mixnet_packet_routing_header *rt_header = (mixnet_packet_routing_header*)recvd_packet->payload;
+                    mixnet_packet_ping *ping_payload = (mixnet_packet_ping*)((char*)rt_header->route + (sizeof(mixnet_address)*rt_header->route_length));
+                    if (recv_port == user_port){
+                        //send PING request to specified DST
+                        printf("[%u] ping src routed to %u\n", config.node_addr, recvd_packet->dst_address);
+                        gettimeofday(&send_time, 0);
+                        send_ping_packet_from_source(handle, config, recvd_packet, net_graph, &send_time);
+
+                    } else if (recvd_packet->dst_address == config.node_addr){
+                        /* recvd PING, send to user stack */
+                        mixnet_packet_routing_header* rcvd_header = (mixnet_packet_routing_header*)recvd_packet->payload;
+                        size_t tot_size = sizeof(mixnet_packet) +
+                                          sizeof(mixnet_packet_routing_header) +                    //2
+                                          (rcvd_header->route_length * sizeof(mixnet_address)) +   //4n
+                                          10;
+                        mixnet_packet* user_pkt = malloc(tot_size);
+                        
+                        // Copy old values while fwding 
+                        memcpy(user_pkt, recvd_packet, tot_size);
+
+                        // Increment hop index
+                        mixnet_packet_routing_header* rt_header = (mixnet_packet_routing_header*)user_pkt->payload;
+                        rt_header->hop_index++;
+
+                        int err = 0;
+                        if( (err = mixnet_send(handle, user_port, user_pkt)) < 0){
+                            printf("Error sending FLOOD pkt to user\n");
+                        }
+                        
+
+                        if(ping_payload->ping_direction == 0) { 
+                            // send PING response back to SRC 
+                            printf("[%u] ping response to %u\n", config.node_addr, recvd_packet->src_address);
+                            send_ping_response(handle, config, recvd_packet, net_graph);
+
+                        }else if(ping_payload->ping_direction == 1){
+                            printf("[%u] ping response received\n", recvd_packet->src_address);
+                            gettimeofday(&curr_time, 0);
+                            uint64_t RTT = curr_time.tv_usec - ping_payload->send_time;
+                            printf("[%u] RTT: %lu\n", config.node_addr, RTT);
+
+                        }else{
+                            printf("ERROR: Invalid direction\n");
+                        }
+
+                    // Packet along forwarding route, forward packet
+                    } else {
+                        fwd_ping_packet(handle, config, recvd_packet, net_graph);
+                    }
+                } break;
+
                 default: break;
             }
         } else {
@@ -950,3 +1020,158 @@ uint16_t get_path_to_node(mixnet_address *path_btw_nodes,
     
     return idx;
 }
+
+void send_ping_packet_from_source(void* handle,
+                            const struct mixnet_node_config config,
+                            mixnet_packet* recvd_packet,
+                            graph_t *net_graph,
+                            struct timeval *t0) {
+
+    // Get hop length (initially for malloc purposes)                           
+    u_int32_t cnt = 0;
+
+    if(config.use_random_routing) 
+        printf("ERROR!!!!!!!!\n");
+
+    path_t* hop_list;
+    hop_list = get_adj_vertex(net_graph, recvd_packet->dst_address)->hop_list;
+    while (hop_list != NULL){
+        if (hop_list->addr == recvd_packet->dst_address) break;    
+        hop_list = hop_list->next;
+        cnt++;
+    }
+
+    size_t tot_size = sizeof(mixnet_packet) +
+                    sizeof(mixnet_packet_routing_header) +  // 4
+                    (cnt * sizeof(mixnet_address)) +        // 2n
+                    10;
+    mixnet_packet* data_packet =  malloc(tot_size);
+
+    // Write Hop path details to data packet
+    mixnet_packet_routing_header* rt_header = (mixnet_packet_routing_header*)data_packet->payload;
+    rt_header->route_length = cnt;
+    rt_header->hop_index = 0;
+    mixnet_address *hop_start = (mixnet_address*)rt_header->route;
+    hop_list = get_adj_vertex(net_graph, recvd_packet->dst_address)->hop_list;
+    cnt = 0;
+    while (hop_list != NULL){
+       if (hop_list->addr == recvd_packet->dst_address) break;    
+        hop_start[cnt] = hop_list->addr;
+        hop_list = hop_list->next;
+        cnt++;
+    }
+
+    // Write PING data 
+    mixnet_packet_ping *ping_data = (mixnet_packet_ping*)((char*)rt_header->route + (cnt * sizeof(mixnet_address)));
+    ping_data->ping_direction = 0;
+    ping_data->send_time = t0->tv_usec;
+
+    // Write other info to data packet
+    data_packet->src_address = config.node_addr;
+    data_packet->dst_address = recvd_packet->dst_address;
+    data_packet->payload_size = tot_size - (sizeof(mixnet_packet));
+    data_packet->type = PACKET_TYPE_PING;
+
+    int err = 0;
+    for (size_t i=0; i < config.num_neighbors; i++){
+        //Consider hop table might be empty. Source route direct to neighbour
+        if ((rt_header->route_length == 0 && config.neighbor_addrs[i] == data_packet->dst_address) ||
+            (rt_header->route_length != 0 && config.neighbor_addrs[i] == hop_start[rt_header->hop_index])){
+            if((err = mixnet_send(handle, i, data_packet)) < 0) {
+                printf("Error sending DATA pkt\n");
+            }
+
+            break;
+        }           
+    }   
+}
+
+void send_ping_response(void* handle,
+                        const struct mixnet_node_config config,
+                        mixnet_packet* recvd_packet,
+                        graph_t *net_graph) 
+{
+
+    mixnet_packet_routing_header* rcvd_header = (mixnet_packet_routing_header*)recvd_packet->payload;
+    size_t tot_size = sizeof(mixnet_packet) +
+                      sizeof(mixnet_packet_routing_header) +                    //4
+                      (rcvd_header->route_length * sizeof(mixnet_address)) +   //2n, we're going to have the same length path, just reversed
+                      10;
+    mixnet_packet* data_packet = malloc(tot_size);
+    
+    // Copy old values while fwding 
+    memcpy(data_packet, recvd_packet, tot_size);
+
+
+    // Write Hop path details to data packet
+    mixnet_packet_routing_header* rt_header = (mixnet_packet_routing_header*)data_packet->payload;
+    rt_header->route_length = rcvd_header->route_length;
+    rt_header->hop_index = 0;
+
+    mixnet_address *hop_start = (mixnet_address*)rt_header->route;
+    path_t* hop_list = get_adj_vertex(net_graph, recvd_packet->src_address)->hop_list;
+    int cnt = 0;
+    while (hop_list != NULL){
+       if (hop_list->addr == recvd_packet->src_address) break;    
+        hop_start[cnt] = hop_list->addr;
+        hop_list = hop_list->next;
+        cnt++;
+    }
+
+
+    // Change PING direction to response
+    mixnet_packet_ping *ping_data = (mixnet_packet_ping*)((char*)rt_header->route + (cnt * sizeof(mixnet_address)));
+    ping_data->ping_direction = 1;
+
+    // Write other info to data packet
+    data_packet->src_address = config.node_addr;
+    data_packet->dst_address = recvd_packet->src_address;
+    data_packet->payload_size = tot_size - (sizeof(mixnet_packet));
+    data_packet->type = PACKET_TYPE_PING;
+
+    int err = 0;
+    for (size_t i=0; i < config.num_neighbors; i++){
+        //Consider hop table might be empty. Source route direct to neighbour
+        if ((rt_header->route_length == 0 && config.neighbor_addrs[i] == data_packet->dst_address) ||
+            (rt_header->route_length != 0 && config.neighbor_addrs[i] == hop_start[rt_header->hop_index])){
+            if((err = mixnet_send(handle, i, data_packet)) < 0) {
+                printf("Error sending DATA pkt\n");
+            }
+            break;
+        }           
+    }   
+}
+
+
+void fwd_ping_packet(void* handle, const struct mixnet_node_config config, 
+                    mixnet_packet* recvd_packet, graph_t* net_graph) 
+{
+    mixnet_packet_routing_header* rcvd_header = (mixnet_packet_routing_header*)recvd_packet->payload;
+    size_t tot_size = sizeof(mixnet_packet) +
+                      sizeof(mixnet_packet_routing_header) +                    //2
+                      (rcvd_header->route_length * sizeof(mixnet_address)) +   //4n
+                      10;
+    mixnet_packet* data_packet = malloc(tot_size);
+    
+    // Copy old values while fwding 
+    memcpy(data_packet, recvd_packet, tot_size);
+
+    // Increment hop index
+    mixnet_packet_routing_header* rt_header = (mixnet_packet_routing_header*)data_packet->payload;
+    rt_header->hop_index++;
+    
+    int err = 0;
+    mixnet_address* hop_start = (mixnet_address*)(rt_header + 1);
+    for (size_t i=0; i < config.num_neighbors; i++) {
+        // Consider hop table might be empty. Source route direct to neighbour
+        if ((rt_header->route_length == rt_header->hop_index && config.neighbor_addrs[i] == data_packet->dst_address) ||
+            (rt_header->route_length > rt_header->hop_index && config.neighbor_addrs[i] == hop_start[rt_header->hop_index])){
+            if((err = mixnet_send(handle, i, data_packet)) < 0) {
+                printf("Error sending DATA pkt\n");
+            }
+
+            break;        
+        }
+    }
+}
+
