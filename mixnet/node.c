@@ -12,15 +12,79 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
+#include <stdbool.h>
+#include <unistd.h>
 
 #include "node.h"
 #include "connection.h"
-#include "queue.h"
-#include "graph.h"
+#include "address.h"
 
 #define DEBUG_FLOOD 0
 #define DEBUG_STP 0
 #define PRINT_CONV 0
+
+struct path_ele{
+    mixnet_address addr;
+    struct path_ele* next; //Downstream in the routing path
+};
+typedef struct path_ele path_t;
+
+struct queue_ele{
+    path_t* path; // Topologically connected routing Path  
+    struct queue_ele* next;
+};
+typedef struct queue_ele elem_t;
+
+struct mixnet_queue{
+    elem_t* front;
+};
+typedef struct mixnet_queue queue_t;
+
+queue_t* queue_init();
+bool is_empty(queue_t* q);
+bool  is_in_queue(queue_t* q, mixnet_address addr);
+void print_path(path_t* p);
+void print_queue(queue_t* q);
+
+elem_t* pop(queue_t* q);
+void add_item(queue_t* q, mixnet_address addr);
+void add_path(queue_t* q, path_t* path);
+path_t* get_end_of_path(path_t* path);
+void extend_path(path_t* path, mixnet_address extension);
+
+path_t* copy_path(path_t* path);
+
+
+struct adjacency_node {
+    mixnet_address addr;
+    struct adjacency_node *next;
+};
+typedef struct adjacency_node adj_node_t;
+
+struct adjacency_vert {
+    mixnet_address addr;
+    adj_node_t *adj_list; // Node's list of neighbours
+    path_t *hop_list; //Path to get to node
+    uint16_t num_children;
+    struct adjacency_vert *next_vert;
+};
+typedef struct adjacency_vert adj_vert_t;
+
+typedef struct {
+    adj_vert_t *head;
+    adj_vert_t *tail;
+    uint16_t    num_vert;
+} graph_t;
+
+graph_t *graph_init(void);
+adj_vert_t *get_adj_vertex(graph_t *net_graph, mixnet_address vert_node);
+bool graph_add_neighbors(graph_t *net_graph, mixnet_address vert_node, mixnet_address *node_list, uint16_t node_count);
+void print_adj_list(adj_node_t* adj);
+void print_graph(graph_t *net_graph);
+void verify_graph(graph_t *net_graph);
+bool adj_list_has_node(graph_t *net_graph, adj_vert_t *adj_vertex, mixnet_address node_addr);
+adj_vert_t *find_vertex(graph_t *net_graph, mixnet_address vert_node);
+
 
 typedef struct{
     mixnet_address root_address;
@@ -190,7 +254,7 @@ void run_node(void *handle,
                 gettimeofday(&root_hello_timer_start, NULL); //Reset root hello timer start
 
                 if(root_hello_ct == 1){
-                    printf("[%u] root SENDING LSA hello count: %d\n", config.node_addr, root_hello_ct);
+                    //printf("[%u] root SENDING LSA hello count: %d\n", config.node_addr, root_hello_ct);
                     broadcast_lsa(handle, config, stp_ports);
                     broadcasted_lsa = true;
                 }else{
@@ -332,13 +396,13 @@ void run_node(void *handle,
                     mixnet_address *neighbor_node_list = (mixnet_address*)((char*)(recvd_packet->payload) + sizeof(mixnet_packet_lsa));
 
                     
-                    printf("[%u] received LSA from source %u with neighbors {", config.node_addr, recvd_lsa_packet->node_address);
-                    for(int i=0; i<recvd_lsa_packet->neighbor_count; i++) {
-                        printf("%u", neighbor_node_list[i]);
-                        if(i < recvd_lsa_packet->neighbor_count -1) 
-                            printf(", ");
-                    }
-                    printf("}\n");
+                    // printf("[%u] received LSA from source %u with neighbors {", config.node_addr, recvd_lsa_packet->node_address);
+                    // for(int i=0; i<recvd_lsa_packet->neighbor_count; i++) {
+                    //     printf("%u", neighbor_node_list[i]);
+                    //     if(i < recvd_lsa_packet->neighbor_count -1) 
+                    //         printf(", ");
+                    // }
+                    // printf("}\n");
                     
                     bool updated = graph_add_neighbors(net_graph, recvd_lsa_packet->node_address, 
                                                         neighbor_node_list, recvd_lsa_packet->neighbor_count);
@@ -361,15 +425,15 @@ void run_node(void *handle,
                         seen_lsa_pkts[seen_lsa_pkts_idx] = recvd_lsa_packet->node_address;
                         seen_lsa_pkts_idx++;
 
-                        printf("[%u] lsa pkts[ ", config.node_addr);
-                        for(int i=0; i<20;i++){
-                            printf("%u ",seen_lsa_pkts[i]);
-                        }
-                        printf("]\n");
+                        // printf("[%u] lsa pkts[ ", config.node_addr);
+                        // for(int i=0; i<20;i++){
+                        //     printf("%u ",seen_lsa_pkts[i]);
+                        // }
+                        // printf("]\n");
 
-                        stp_ports[recv_port] = 0;
+                        //stp_ports[recv_port] = 0;
                         fwd_lsa(handle, config, stp_ports, neighbor_node_list, recvd_lsa_packet->node_address, recvd_lsa_packet->neighbor_count);
-                        stp_ports[recv_port] = 1;
+                        //stp_ports[recv_port] = 1;
 
                         free(recvd_packet);
                     }
@@ -606,9 +670,9 @@ void broadcast_lsa(void *handle,
                 printf("Error sending LSA pkt\n");
             }
 
-            printf("[%u] Sent LSA to Node %u\n", 
-                config.node_addr,
-                config.neighbor_addrs[nid]);
+            // printf("[%u] Sent LSA to Node %u\n", 
+            //     config.node_addr,
+            //     config.neighbor_addrs[nid]);
         }
     }
 }
@@ -644,10 +708,10 @@ void fwd_lsa(void *handle,
                 printf("Error fwd LSA pkt\n");
             }
 
-            printf("[%u] Forwaded LSA of source %u to Node %u\n", 
-                config.node_addr,
-                source,
-                config.neighbor_addrs[nid]);
+            // printf("[%u] Forwaded LSA of source %u to Node %u\n", 
+            //     config.node_addr,
+            //     source,
+            //     config.neighbor_addrs[nid]);
         }
     }
 }
@@ -683,11 +747,11 @@ void send_packet_from_source(void* handle,
         path = tmp_path;
     }
 
-    printf("[%u] path: [ ", config.node_addr);
-    for(int i=0; i<path_len; i++){
-        printf("%u ", path[i]);
-    }
-    printf("]\n");
+    // printf("[%u] path: [ ", config.node_addr);
+    // for(int i=0; i<path_len; i++){
+    //     printf("%u ", path[i]);
+    // }
+    // printf("]\n");
 
     size_t tot_size = sizeof(mixnet_packet) +
                                     sizeof(mixnet_packet_routing_header) +
@@ -744,10 +808,10 @@ void fwd_data_packet(void* handle, const struct mixnet_node_config config,
     mixnet_address* hop_start = (mixnet_address*)rt_header->route;
     rt_header->hop_index++;
 
-    printf("[%u] fwd data packet sent from %u meant for %u ", 
-        config.node_addr,
-        data_packet->src_address,
-        data_packet->dst_address);
+    // printf("[%u] fwd data packet sent from %u meant for %u ", 
+    //     config.node_addr,
+    //     data_packet->src_address,
+    //     data_packet->dst_address);
     
     int err = 0;
     for (size_t i=0; i < config.num_neighbors; i++){
@@ -758,7 +822,7 @@ void fwd_data_packet(void* handle, const struct mixnet_node_config config,
                 printf("Error sending DATA pkt\n");
             }
 
-            printf("to node %u\n", config.neighbor_addrs[i]);
+            //printf("to node %u\n", config.neighbor_addrs[i]);
             break;        
         }
     }
@@ -1334,4 +1398,335 @@ mixnet_packet *compute_pkt_route_src (const struct mixnet_node_config config,
     data_packet->type = PACKET_TYPE_DATA;
 
     return data_packet;
+}
+
+queue_t* queue_init(){
+    queue_t* q = malloc(sizeof(queue_t));
+    q->front = NULL;
+    return q;
+}
+
+bool is_empty(queue_t* q){
+    return q->front == NULL;
+}
+
+elem_t* pop(queue_t* q){
+    elem_t* res = q->front;
+    elem_t* tmp = q->front->next;
+    q->front = tmp;
+    return res;
+}
+
+bool is_in_queue(queue_t* q, mixnet_address addr){
+    elem_t* curr = q->front;
+
+    while(curr != NULL){
+        if (curr->path->addr == addr) return true;
+        curr = curr->next;
+    }
+
+    return false;
+}
+
+void add_item(queue_t* q, mixnet_address addr){
+    elem_t* new = malloc(sizeof(elem_t));
+    new->path = malloc(sizeof(path_t));
+    new->next = NULL;
+    new->path->addr = addr;
+    new->path->next = NULL;
+
+    elem_t* curr = q->front;   
+    if (curr == NULL){ // Cold add
+        q->front = new;
+        return;
+    } else {
+        while(curr->next != NULL){ //Insert after last list elem
+            curr = curr->next;
+        }
+        curr->next = new;
+    }
+}
+
+void print_queue(queue_t* q){
+    elem_t* curr = q->front;
+    printf("[");
+    while(curr != NULL){
+        print_path(curr->path);
+        printf(",");
+        curr = curr->next;
+    }
+    printf("]\n");
+}
+
+void print_path(path_t* p){
+    path_t* curr = p;
+    printf("[");
+    while(curr != NULL){
+        printf("%u ", curr->addr);
+        curr = curr->next;
+    }
+    printf("]");
+}
+
+void add_path(queue_t* q, path_t* path){
+    elem_t* new = malloc(sizeof(elem_t));
+    new->path = path;
+    new->next = NULL;
+
+    elem_t* curr = q->front;   
+    if (curr == NULL){ // Cold add
+        q->front = new;
+        return;
+    } else {
+        while(curr->next != NULL){ //Insert after last list elem
+            curr = curr->next;
+        }
+        curr->next = new;
+    }
+}
+
+path_t* get_end_of_path(path_t* path){            
+    path_t* tmp = path;    
+    while (tmp->next != NULL){
+        tmp = tmp->next;
+    }
+    return tmp;
+}
+
+void extend_path(path_t* path, mixnet_address extension){
+    path_t* tmp = path;
+    while (tmp->next != NULL){
+        tmp = tmp->next;
+    }
+    path_t* new = malloc(sizeof(path_t));
+    new->addr = extension;
+    new->next = NULL;
+
+    tmp->next = new;
+}
+
+path_t* copy_path(path_t* path){
+    path_t *tmp;
+    path_t *result;
+    result = malloc(sizeof(path_t));
+    result->addr = path->addr;
+    path = path->next;
+
+    tmp = result;
+    while (path != NULL){
+        tmp->next = malloc(sizeof(path_t));
+        tmp->next->addr = path->addr;
+        tmp = tmp->next;
+        path = path->next;        
+    }
+    tmp->next = NULL;
+
+    return result;
+}
+
+graph_t *graph_init(void) {
+    graph_t *graph = malloc(sizeof(graph_t));
+    graph->head = NULL;
+    graph->tail = NULL;
+    graph->num_vert = 0;
+    return graph;
+}
+
+bool is_vertex(graph_t *net_graph, mixnet_address addr) {
+    adj_vert_t *tmp_vert = net_graph->head;
+    bool ret = false;
+    while(tmp_vert != NULL) {
+        if(tmp_vert->addr == addr)
+            ret = true;
+        tmp_vert = tmp_vert->next_vert;
+    }
+    return ret;
+}
+
+void verify_graph(graph_t *net_graph){
+    adj_vert_t *adj_vertex =  net_graph->head;
+    adj_vert_t *tmp_vert;
+    adj_node_t *search_node, *node;
+
+    while(adj_vertex != NULL){
+        adj_node_t *tmp_node = adj_vertex->adj_list;
+        while(tmp_node != NULL){
+            if(is_vertex(net_graph, tmp_node->addr)){
+                tmp_vert = get_adj_vertex(net_graph, tmp_node->addr);
+
+                if(!adj_list_has_node(net_graph, tmp_vert, adj_vertex->addr)) {
+                    node = malloc(sizeof(adj_node_t));
+                    node->addr = adj_vertex->addr;
+                    node->next = NULL;
+                    tmp_vert->num_children += 1;
+                    
+                    //append
+                    if(tmp_vert->adj_list == NULL){
+                        tmp_vert->adj_list = node;
+                    }else{
+                        search_node = tmp_vert->adj_list;
+                        while(search_node->next != NULL){
+                            search_node = search_node->next;
+                        }
+                        search_node->next = node;
+                    }
+                    //printf("MISSING %u from vert %u\n",adj_vertex->addr, tmp_vert->addr );
+                }
+            }
+            tmp_node = tmp_node->next;
+        }
+
+        adj_vertex = adj_vertex->next_vert;
+    }
+    
+}
+
+bool graph_add_neighbors(graph_t *net_graph, mixnet_address vert_node, mixnet_address *node_list, uint16_t node_count) {
+    adj_vert_t *adj_vertex = get_adj_vertex(net_graph, vert_node);
+    adj_node_t *node;
+    adj_node_t *search_node;
+    bool node_in_graph = false;
+    bool added = false;
+
+    for(uint16_t node_idx=0; node_idx < node_count; node_idx++){
+        node_in_graph = adj_list_has_node(net_graph, adj_vertex, node_list[node_idx]);
+        
+        if(!node_in_graph) {
+            adj_vertex->num_children += 1;
+            added = true;
+            node = malloc(sizeof(adj_node_t));
+            node->addr = node_list[node_idx];
+            node->next = NULL;
+
+            // Insert neighbour at start of vertex adjacency list
+            if(adj_vertex->adj_list == NULL){
+                adj_vertex->adj_list = node;
+
+            // Insert neighbour at end of vertex adjacency list
+            }else{
+                search_node = adj_vertex->adj_list;
+                while(search_node->next != NULL){
+                    search_node = search_node->next;
+                }
+
+                search_node->next = node;
+            }
+        }
+    }
+    return added;
+}
+
+bool adj_list_has_node(graph_t *net_graph, adj_vert_t *adj_vertex, mixnet_address node_addr) {
+    adj_node_t *search_node;
+    search_node = adj_vertex->adj_list;
+    bool found_node = false;
+
+    while(search_node != NULL) {
+        if(search_node->addr == node_addr) {
+            found_node = true;
+            break;
+        }
+        search_node = search_node->next;
+    }
+    
+    return found_node;
+}
+
+adj_vert_t *get_adj_vertex(graph_t *net_graph, mixnet_address vert_node) {
+    adj_vert_t *adj_vertex;
+    adj_vert_t *search_vert; 
+
+    // no ele in vert list
+    if(net_graph->head == NULL && net_graph->tail == NULL && net_graph->num_vert == 0) {
+        adj_vertex = malloc(sizeof(adj_vert_t));
+        adj_vertex->addr = vert_node;
+        adj_vertex->num_children = 0;
+        adj_vertex->adj_list = NULL;
+        adj_vertex->next_vert = NULL;
+
+        net_graph->head = adj_vertex;
+        net_graph->tail = adj_vertex;
+        net_graph->num_vert++;
+
+    // one ele in vert list
+    }else if(net_graph->head == net_graph->tail && net_graph->num_vert == 1) {
+
+        // is the vertex we're looking for, the only one that is in the vertex list?
+        if(net_graph->head->addr == vert_node) {
+            adj_vertex = net_graph->head;
+
+        }else{
+            adj_vertex = malloc(sizeof(adj_vert_t));
+            adj_vertex->addr = vert_node;
+            adj_vertex->num_children = 0;
+            adj_vertex->adj_list = NULL;
+            adj_vertex->next_vert = NULL;
+            
+            net_graph->tail = adj_vertex;
+            net_graph->head->next_vert = adj_vertex;
+            net_graph->num_vert++;
+        }
+        
+    // two or more ele in vert list
+    }else{
+        search_vert = find_vertex(net_graph, vert_node);
+        if(search_vert != NULL && search_vert->addr == vert_node) {
+            adj_vertex = search_vert;
+        }else{
+            adj_vertex = malloc(sizeof(adj_vert_t));
+            adj_vertex->addr = vert_node;
+            adj_vertex->num_children = 0;
+            adj_vertex->adj_list = NULL;
+            adj_vertex->next_vert = NULL;
+
+            net_graph->tail->next_vert = adj_vertex;        
+            net_graph->tail = adj_vertex;  
+            net_graph->num_vert++;      
+        }
+    }
+    return adj_vertex;
+}
+
+adj_vert_t *find_vertex(graph_t *net_graph, mixnet_address vert_node) {
+    adj_vert_t *search_vert = net_graph->head;
+
+    while(search_vert != NULL){
+        if(search_vert->addr == vert_node) {
+            return search_vert;
+        }
+        search_vert = search_vert->next_vert;
+    }
+    return NULL;
+}
+
+void print_adj_list(adj_node_t* adj){
+    adj_node_t* curr = adj;
+    printf("[");
+    while(curr != NULL){
+        printf("%u ", curr->addr);
+        curr = curr->next;
+    }
+    printf("]\n");
+}
+
+
+void print_graph(graph_t *net_graph) {
+    adj_vert_t *vert = net_graph->head;
+    adj_node_t *node;
+
+    while(vert != NULL) {
+        node = vert->adj_list;
+        printf("%u: [ ", vert->addr);
+        while(node != NULL){
+            printf("%u ", node->addr);
+            node = node->next;
+        }
+
+        printf("]; ");
+        printf("(%u) ",vert->num_children);
+        print_path(vert->hop_list);
+        printf("\n");
+        vert = vert->next_vert; 
+    }
+    printf("\n");
 }
