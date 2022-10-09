@@ -293,26 +293,32 @@ void run_node(void *handle,
                 } break;
 
                 case PACKET_TYPE_DATA: {
-                    printf("[%u]", config.node_addr);
-                    print_graph(net_graph);
-                    // Source route new packet
-                    if (recv_port == user_port){
-                        // print_routes(net_graph);
-                        printf("Entering send packet from source\n");
-                        send_packet_from_source(handle, config, recvd_packet, net_graph);
+                    //printf("[%u]", config.node_addr);
+                    //print_graph(net_graph);
+                    if(config.use_random_routing) {
 
-                    // Packet arrived at destination send to user stack
-                    } else if (recvd_packet->dst_address == config.node_addr){
-                        int err = 0;
-                        if( (err = mixnet_send(handle, user_port, recvd_packet)) < 0){
-                            printf("Error sending FLOOD pkt to user\n");
+                    }else{
+
+                        // Source route new packet
+                        if (recv_port == user_port){
+                            // print_routes(net_graph);
+                            printf("Entering send packet from source\n");
+                            send_packet_from_source(handle, config, recvd_packet, net_graph);
+
+                        // Packet arrived at destination send to user stack
+                        } else if (recvd_packet->dst_address == config.node_addr){
+                            int err = 0;
+                            if( (err = mixnet_send(handle, user_port, recvd_packet)) < 0){
+                                printf("Error sending FLOOD pkt to user\n");
+                            }
+
+                        // Packet along forwarding route, forward packet
+                        } else {
+                            // printf("Entering fwding data packet\n");
+                            fwd_data_packet(handle, config, recvd_packet, net_graph);
                         }
-
-                    // Packet along forwarding route, forward packet
-                    } else {
-                        // printf("Entering fwding data packet\n");
-                        fwd_data_packet(handle, config, recvd_packet, net_graph);
                     }
+
                 } break;
                 default: break;
             }
@@ -668,11 +674,11 @@ void get_shortest_paths(const struct mixnet_node_config config, graph_t *net_gra
                 //Using information of preceeding hop, extend path of route          
                 // Create new unique route if parent node splits into multiple children
                 path_t* branch_off;
-                if (!single_desc){
-                    branch_off = copy_path(popped_path);
-                }else{
+                if(single_desc && node_info->num_children == 2) {
                     single_desc = false;
                     branch_off = popped_path;
+                } else{
+                    branch_off = copy_path(popped_path);
                 }
 
                 extend_path(branch_off, neighbours->addr);

@@ -33,6 +33,7 @@ bool graph_add_neighbors(graph_t *net_graph, mixnet_address vert_node, mixnet_ad
         node_in_graph = adj_list_has_node(net_graph, adj_vertex, node_list[node_idx]);
         
         if(!node_in_graph) {
+            adj_vertex->num_children += 1;
             added = true;
             node = malloc(sizeof(adj_node_t));
             node->addr = node_list[node_idx];
@@ -80,6 +81,7 @@ adj_vert_t *get_adj_vertex(graph_t *net_graph, mixnet_address vert_node) {
     if(net_graph->head == NULL && net_graph->tail == NULL && net_graph->num_vert == 0) {
         adj_vertex = malloc(sizeof(adj_vert_t));
         adj_vertex->addr = vert_node;
+        adj_vertex->num_children = 0;
         adj_vertex->adj_list = NULL;
         adj_vertex->next_vert = NULL;
 
@@ -97,6 +99,7 @@ adj_vert_t *get_adj_vertex(graph_t *net_graph, mixnet_address vert_node) {
         }else{
             adj_vertex = malloc(sizeof(adj_vert_t));
             adj_vertex->addr = vert_node;
+            adj_vertex->num_children = 0;
             adj_vertex->adj_list = NULL;
             adj_vertex->next_vert = NULL;
             
@@ -113,6 +116,7 @@ adj_vert_t *get_adj_vertex(graph_t *net_graph, mixnet_address vert_node) {
         }else{
             adj_vertex = malloc(sizeof(adj_vert_t));
             adj_vertex->addr = vert_node;
+            adj_vertex->num_children = 0;
             adj_vertex->adj_list = NULL;
             adj_vertex->next_vert = NULL;
 
@@ -159,7 +163,8 @@ void print_graph(graph_t *net_graph) {
             node = node->next;
         }
 
-        printf("];  ");
+        printf("]; ");
+        printf("(%u) ",vert->num_children);
         print_path(vert->hop_list);
         printf("\n");
         vert = vert->next_vert; 
